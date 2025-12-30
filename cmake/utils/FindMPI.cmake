@@ -14,14 +14,30 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""TVM distributed runtime API."""
-from .session import (
-    DModule,
-    DPackedFunc,
-    DRef,
-    ProcessSession,
-    Session,
-    ThreadedSession,
-    SocketSession,
-    MPISession,
-)
+#
+# Variables used by this module, they can change the default behaviour and need
+# to be set before calling find_package:
+
+
+macro(find_mpi use_mpi)
+  if("${use_mpi}" MATCHES "${IS_FALSE_PATTERN}")
+    return()
+  endif()
+
+  if("${use_mpi}" MATCHES "${IS_TRUE_PATTERN}")
+    find_package(MPI)
+  endif()
+  if (MPI_FOUND)
+    message(STATUS "Found MPI_LIBRARY: ${MPI_CXX_LIBRARIES}")
+    message(STATUS "Found MPI_INCLUDE_DIR: ${MPI_CXX_INCLUDE_DIRS}")
+    add_library(mpi SHARED IMPORTED)
+    set_target_properties(mpi
+      PROPERTIES
+      INTERFACE_INCLUDE_DIRECTORIES "${MPI_CXX_INCLUDE_DIRS}"
+      IMPORTED_LOCATION             "${MPI_CXX_LIBRARIES}")
+  
+  else()
+    message(STATUS "MPI not found")
+  endif()
+  mark_as_advanced(MPI_CXX_INCLUDE_DIRS MPI_CXX_LIBRARIES)
+endmacro()

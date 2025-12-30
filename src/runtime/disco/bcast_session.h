@@ -95,6 +95,7 @@ class BcastSessionObj : public SessionObj {
   friend struct Internal;
   friend class SocketSessionObj;
   friend class RemoteSocketSession;
+  friend class MPISessionObj;
 };
 
 /*!
