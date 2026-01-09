@@ -323,7 +323,7 @@ class Session(Object):
         *device_ids : int
             The device IDs to be used by the underlying communication library.
         """
-        assert ccl in ("nccl", "rccl"), f"Unsupported CCL backend: {ccl}"
+        assert ccl in ("nccl", "rccl", "openmpi"), f"Unsupported CCL backend: {ccl}"
         _ffi_api.SessionInitCCL(self, ccl, ShapeTuple(device_ids))  # type: ignore # pylint: disable=no-member
         self._clear_ipc_memory_pool()
 

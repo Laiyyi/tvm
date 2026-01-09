@@ -1,8 +1,12 @@
-#  這邊是試試看 model 不要用 relax 優化 看可不可以通過編譯跑起來
+#  這邊是試試看 model 不要用 relax 優化 看可不可以通過編譯build起來
 import tvm
 from tvm import relax
 from tvm.relax.frontend import nn
 
+import os
+
+# m = nn.Linear(20, 30)
+# input = torch.randn(128, 20)
 
 # class SimpleModule(nn.Module):
 #     def __init__(self):
@@ -44,7 +48,8 @@ class Module:
         R.func_attr({"num_input": 1})
         with R.dataflow():
             permute_dims: R.Tensor((784, 256), dtype="float32") = R.permute_dims(fc1_weight, axes=None)
-            permute_dims: R.Tensor((784, 256), dtype="float32") = R.distributed.annotate_sharding(permute_dims, device_mesh="mesh[0]", placement="S[1]")
+            permute_dims: R.Tensor((784, 256), dtype="float32") = R.distributed.annotate_sharding(permute_dims, 
+                                                                                                  device_mesh="mesh[0]", placement="S[1]")
             matmul: R.Tensor((1, 256), dtype="float32") = R.matmul(x, permute_dims, out_dtype="void")
             add: R.Tensor((1, 256), dtype="float32") = R.add(matmul, fc1_bias)
             relu: R.Tensor((1, 256), dtype="float32") = R.nn.relu(add)
@@ -56,9 +61,15 @@ class Module:
         return gv
     
 after = relax.distributed.transform.PropagateSharding()(Module)
+after.show()
+
 afterlowerdistir = relax.distributed.transform.LowerDistIR()(after)
+afterlowerdistir.show()
+
+afterlowerdistir = tvm.relax.transform.LegalizeOps()(afterlowerdistir)
+afterlowerdistir.show()
 
 after = relax.get_pipeline("zero")(afterlowerdistir)
-ex = tvm.compile(after, target="llvm").export_library("testmodel.so")
-dev = tvm.device("cpu",0)
+path = os.path.join(os.path.dirname(__file__), "testmodel.so")
+ex = tvm.compile(after, target="llvm").export_library(path)
 
