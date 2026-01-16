@@ -13,7 +13,7 @@ include(cmake/utils/FindLLVM.cmake)
 include(cmake/utils/FindROCM.cmake)
 include(cmake/utils/FindRCCL.cmake)
 include(cmake/utils/FindNVSHMEM.cmake)
-include(cmake/utils/FindOpenMPI.cmake)
+include(cmake/utils/FindMPI.cmake)
 
 if(EXISTS ${CMAKE_BINARY_DIR}/config.cmake)
   include(${CMAKE_BINARY_DIR}/config.cmake)
@@ -34,7 +34,7 @@ tvm_option(USE_OPENCL "Build with OpenCL" OFF)
 tvm_option(USE_OPENCL_ENABLE_HOST_PTR "Enable OpenCL memory object access to host" OFF)
 tvm_option(USE_OPENCL_GTEST "Path to OpenCL specific gtest version for runtime cpp tests." /path/to/opencl/gtest)
 tvm_option(USE_VULKAN "Build with Vulkan" OFF)
-tvm_option(USE_OPENMPI "Build with OpenMPI" OFF)
+tvm_option(USE_MPI "Build with MPI" OFF)
 
 
 # Whether to use spirv-tools.and SPIRV-Headers from Khronos github or gitlab.
@@ -380,12 +380,12 @@ if(USE_CUDA AND USE_NCCL)
   list(APPEND RUNTIME_SRCS ${RUNTIME_NCCL_SRC})
 endif()
 
-if(USE_OPENMPI)
-  message(STATUS "Build with OpenMPI...")
-  find_openmpi(${USE_OPENMPI})
-  include_directories(SYSTEM ${MPI_INCLUDE_DIR})
-  tvm_file_glob(GLOB RUNTIME_OPENMPI_SRC src/runtime/disco/openmpi/*.cc)
-  list(APPEND RUNTIME_SRCS ${RUNTIME_OPENMPI_SRC})
+if(USE_MPI)
+  message(STATUS "Build with MPI...")
+  find_mpi(${USE_MPI})
+  include_directories(${MPI_CXX_INCLUDE_DIRS})
+  tvm_file_glob(GLOB RUNTIME_MPI_SRC src/runtime/disco/mpi/*.cc)
+  list(APPEND RUNTIME_SRCS ${RUNTIME_MPI_SRC})
 endif()
 
 
@@ -816,6 +816,13 @@ if(USE_CUDA AND USE_NCCL)
   target_link_libraries(tvm PRIVATE nccl ${LIBRT})
   target_link_libraries(tvm_runtime PRIVATE nccl ${LIBRT})
 endif()
+
+if(USE_MPI)
+  find_library(LIBMPI mpi)
+  target_link_libraries(tvm PRIVATE mpi ${LIBMPI})
+  target_link_libraries(tvm_runtime PRIVATE mpi ${LIBMPI})
+endif()
+
 
 
 if (USE_CUDA AND USE_NVSHMEM)

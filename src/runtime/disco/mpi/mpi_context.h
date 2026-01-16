@@ -17,8 +17,8 @@
  * under the License.
  */
 
-#ifndef TVM_RUNTIME_DISCO_OPENMPI_CONTEXT_H_
-#define TVM_RUNTIME_DISCO_OPENMPI_CONTEXT_H_
+#ifndef TVM_RUNTIME_DISCO_MPI_CONTEXT_H_
+#define TVM_RUNTIME_DISCO_MPI_CONTEXT_H_
 
 #include <dlpack/dlpack.h>
 #include <tvm/ffi/function.h>
@@ -32,53 +32,51 @@
 
 namespace tvm {
 namespace runtime {
-namespace openmpi {
+namespace mpi {
 
-#define TVM_DISCO_CCL_NAME "openmpi"
+#define TVM_DISCO_CCL_NAME "mpi"
 #define TVM_DISCO_DEVICE_NAME "cpu"
+#define MPI_CALL(cmd)                                                      \
+  do {                                                                      \
+    auto r = (cmd);                                                         \
+    if (r != MPI_SUCCESS) {\
+      char err_string[MPI_MAX_ERROR_STRING];\
+      LOG(FATAL) << TVM_DISCO_CCL_NAME "Errror: " <<  MPI_Error_string(r, err_string, nullptr); \
+    }                                                                       \
+  } while (0)
 
 const constexpr DLDeviceType TVM_DISCO_DEVICE_TYPE = DLDeviceType::kDLCPU;
 
 
-#define OPENMPI_CALL(cmd)                                                      
-  do {                                                                      
-    auto r = (cmd);                                                         
-    if (r != MPI_SUCCESS) {        
-      char err_string[MPI_MAX_ERROR_STRING];
-      LOG(FATAL) << TVM_DISCO_CCL_NAME "Errror: " << MPI_Error_string(r, err_string, nullptr); 
-    }                                                                       
-  } while (0)
-
-
 struct CCLThreadLocalContext {
   DiscoWorker* worker = nullptr;
-  int device_id;
-
+  MPI_Comm global_comm = nullptr;
+  MPI_Comm group_comm = nullptr;
   ~CCLThreadLocalContext() { Clear(); }
 
   void Clear() {
-    if (group_comm != MPI_COMM_NULL) {
-      OPENMPI_CALL(MPI_Comm_free(group_comm));
-      if (global_comm == group_comm) {
-        global_comm = MPI_COMM_NULL;
-      }
-      group_comm = MPI_COMM_NULL;
-    }
-    if (global_comm != MPI_COMM_NULL) {
-      OPENMPI_CALL(MPI_Comm_free(global_comm));
-      global_comm = MPI_COMM_NULL;
-    }
   
-    worker = nullptr;
-  }
+    if (group_comm != MPI_COMM_NULL) {
+        if (global_comm == group_comm) {
+            global_comm = MPI_COMM_NULL;
+        }
+        MPI_CALL(MPI_Comm_free(&group_comm));
+        group_comm = MPI_COMM_NULL;
+    }
 
- 
+    if (global_comm != MPI_COMM_NULL) {
+        MPI_CALL(MPI_Comm_free(&global_comm));
+        global_comm = MPI_COMM_NULL;
+    }
+    worker = nullptr;
+
+  }
 
   static CCLThreadLocalContext* Get();
 };
 
-}  // namespace openmpi
+}  // namespace mpi
 }  // namespace runtime
 }  // namespace tvm
 
-#endif  // TVM_RUNTIME_DISCO_OPENMPI_CONTEXT_H_
+#endif  // TVM_RUNTIME_DISCO_MPI_CONTEXT_H_
