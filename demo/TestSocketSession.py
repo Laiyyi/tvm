@@ -20,7 +20,7 @@ assert num_workers % num_nodes == 0
 num_workers_per_node = num_workers // num_nodes
 server_host = "localhost"
 # server_host = "192.168.50.169"
-server_port = get_free_port()
+server_port = 38597
 
 
 
