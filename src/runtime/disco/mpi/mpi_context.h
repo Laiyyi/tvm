@@ -36,11 +36,11 @@ namespace mpi {
 
 #define TVM_DISCO_CCL_NAME "mpi"
 #define TVM_DISCO_DEVICE_NAME "cpu"
-#define MPI_CALL(cmd)                                                      \
+#define MPI_CALL(cmd)                                                       \
   do {                                                                      \
     auto r = (cmd);                                                         \
-    if (r != MPI_SUCCESS) {\
-      char err_string[MPI_MAX_ERROR_STRING];\
+    if (r != MPI_SUCCESS) {                                                 \
+      char err_string[MPI_MAX_ERROR_STRING];                                \
       LOG(FATAL) << TVM_DISCO_CCL_NAME "Errror: " <<  MPI_Error_string(r, err_string, nullptr); \
     }                                                                       \
   } while (0)

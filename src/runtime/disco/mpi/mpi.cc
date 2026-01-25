@@ -42,14 +42,24 @@ CCLThreadLocalContext* CCLThreadLocalContext::Get() {
 void InitCCL(Session sess, ffi::Shape device_ids) {
   DRef func = sess->GetGlobalFunc("runtime.disco." TVM_DISCO_CCL_NAME ".init_ccl_per_worker");
   DLOG(INFO) << "Initializing " TVM_DISCO_CCL_NAME " with devices: " << device_ids;
-   sess->CallPacked(func, device_ids);
+  sess->CallPacked(func, device_ids);
 }
 
 void InitCCLPerWorker(ffi::Shape device_ids) {
+
   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
   DiscoWorker* worker = DiscoWorker::ThreadLocal();
-  ICHECK(worker != nullptr);
   printf("Worker %d initializing " TVM_DISCO_CCL_NAME "...\n", worker->worker_id);
+  ICHECK(worker != nullptr);
+
+  int rank=0;
+  int world_rank=0;
+ // if( worker->worker_id == 0 ) MPI_CALL(MPI_Init(nullptr, nullptr));
+ 
+  MPI_CALL(MPI_Comm_size(MPI_COMM_WORLD, &rank));
+  MPI_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &world_rank));
+  printf("Rank %d initializing "  "...\n",rank);
+  printf("world_rank %d initializing "  "...\n",world_rank);
   // CHECK_EQ(unique_id_bytes.size(), NCCL_UNIQUE_ID_BYTES)
   //     << "ValueError: The length of unique_id must be " << NCCL_UNIQUE_ID_BYTES << ", but got "
   //     << unique_id_bytes.size() << ".";
@@ -306,7 +316,7 @@ void InitCCLPerWorker(ffi::Shape device_ids) {
 //   StreamSynchronize(stream);
 // }
 
- TVM_FFI_STATIC_INIT_BLOCK() {
+   TVM_FFI_STATIC_INIT_BLOCK() {
    namespace refl = tvm::ffi::reflection;
    refl::GlobalDef()
        .def("runtime.disco." TVM_DISCO_CCL_NAME ".init_ccl", InitCCL)
