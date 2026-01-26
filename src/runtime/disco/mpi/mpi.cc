@@ -49,17 +49,17 @@ void InitCCLPerWorker(ffi::Shape device_ids) {
 
   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
   DiscoWorker* worker = DiscoWorker::ThreadLocal();
-  printf("Worker %d initializing " TVM_DISCO_CCL_NAME "...\n", worker->worker_id);
   ICHECK(worker != nullptr);
 
-  int rank=0;
-  int world_rank=0;
- // if( worker->worker_id == 0 ) MPI_CALL(MPI_Init(nullptr, nullptr));
- 
-  MPI_CALL(MPI_Comm_size(MPI_COMM_WORLD, &rank));
-  MPI_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &world_rank));
-  printf("Rank %d initializing "  "...\n",rank);
-  printf("world_rank %d initializing "  "...\n",world_rank);
+  int Comm_size=0;
+  int Comm_rank=0;
+  MPI_CALL(MPI_Comm_size(MPI_COMM_WORLD, &Comm_size));
+  MPI_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &Comm_rank));
+  printf("Worker %d initializing " TVM_DISCO_CCL_NAME "...\n", worker->worker_id);
+  printf("Comm_size %d initializing "  "...\n",Comm_size);
+  printf("Comm_rank %d initializing "  "...\n",Comm_rank);
+
+
   // CHECK_EQ(unique_id_bytes.size(), NCCL_UNIQUE_ID_BYTES)
   //     << "ValueError: The length of unique_id must be " << NCCL_UNIQUE_ID_BYTES << ", but got "
   //     << unique_id_bytes.size() << ".";
