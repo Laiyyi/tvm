@@ -83,14 +83,14 @@ void InitCCLPerWorker(ffi::Shape device_ids) {
 
     // 寫入檔案
     fout << "group size = " << group_size << std::endl;
-    fout << "worker->num_workers = " << w.num_workers << std::endl;
-    fout << "worker->num_groups = " << w.num_groups << std::endl;
+    fout << "worker->num_workers = " << worker->num_workers << std::endl;
+    fout << "worker->num_groups = " << worker->num_groups << std::endl;
     fout << "device id = " << device_id << std::endl;
-    fout << "worker->local_worker_id = " << w.local_worker_id << std::endl;
-    fout << "worker->ccl = " << w.ccl << std::endl;
-    fout << "ctx->worker = " << ctx.worker << std::endl;
-    fout << "ctx->device_id = " << ctx.device_id << std::endl;
-    fout << "ctx->worker->worker_id = " << ctx.worker->worker_id << std::endl;
+    fout << "worker->local_worker_id = " << worker->local_worker_id << std::endl;
+    fout << "worker->ccl = " << worker->ccl << std::endl;
+    fout << "ctx->worker = " << ctx->worker << std::endl;
+    fout << "ctx->device_id = " << ctx->device_id << std::endl;
+    fout << "ctx->worker->worker_id = " << ctx->worker->worker_id << std::endl;
 
     fout.close(); // 關檔
    
