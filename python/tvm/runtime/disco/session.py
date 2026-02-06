@@ -324,6 +324,16 @@ class Session(Object):
             The device IDs to be used by the underlying communication library.
         """
         assert ccl in ("nccl", "rccl", "mpi"), f"Unsupported CCL backend: {ccl}"
+        
+        if ccl == "mpi":
+            try:
+                from mpi4py import MPI
+            except ImportError as e:
+                raise ImportError(
+                    "ccl='mpi' requires mpi4py, but mpi4py is not installed. "
+                    "Please install it with: pip install mpi4py"
+            ) from e
+
         _ffi_api.SessionInitCCL(self, ccl, ShapeTuple(device_ids))  # type: ignore # pylint: disable=no-member
         self._clear_ipc_memory_pool()
 
@@ -557,7 +567,7 @@ class ProcessSession(Session):
             num_groups,
             "runtime.disco.create_process_pool",
             entrypoint,
-        )
+        )        
         self._configure_structlog()
 
     def _configure_structlog(self) -> None:
@@ -581,6 +591,7 @@ class ProcessSession(Session):
         config = pickle.dumps(full_config)
         func = self.get_global_func("runtime.disco._configure_structlog")
         func(config, os.getpid())
+        
 
 
 @register_global_func("runtime.disco.create_socket_session_local_workers")

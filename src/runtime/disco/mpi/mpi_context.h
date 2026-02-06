@@ -47,31 +47,15 @@ namespace mpi {
 
 const constexpr DLDeviceType TVM_DISCO_DEVICE_TYPE = DLDeviceType::kDLCPU;
 
-
 struct CCLThreadLocalContext {
   DiscoWorker* worker = nullptr;
-  MPI_Comm global_comm = nullptr;
-  MPI_Comm group_comm = nullptr;
+  int device_id;
+  int comm_size;
+  int comm_rank;
   ~CCLThreadLocalContext() { Clear(); }
-
-  void Clear() {
   
-    if (group_comm != MPI_COMM_NULL) {
-        if (global_comm == group_comm) {
-            global_comm = MPI_COMM_NULL;
-        }
-        MPI_CALL(MPI_Comm_free(&group_comm));
-        group_comm = MPI_COMM_NULL;
-    }
-
-    if (global_comm != MPI_COMM_NULL) {
-        MPI_CALL(MPI_Comm_free(&global_comm));
-        global_comm = MPI_COMM_NULL;
-    }
-    worker = nullptr;
-
-  }
-
+  void Clear() { worker = nullptr; MPI_CALL(MPI_Finalize());}
+  
   static CCLThreadLocalContext* Get();
 };
 

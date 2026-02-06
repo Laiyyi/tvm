@@ -27,7 +27,7 @@
 #include "../../../support/process_id.h"
 #include "../utils.h"
 #include "mpi_context.h"
-
+#include <fstream>
 
 namespace tvm {
 namespace runtime {
@@ -38,7 +38,6 @@ CCLThreadLocalContext* CCLThreadLocalContext::Get() {
   return &ctx;
 }
 
-
 void InitCCL(Session sess, ffi::Shape device_ids) {
   DRef func = sess->GetGlobalFunc("runtime.disco." TVM_DISCO_CCL_NAME ".init_ccl_per_worker");
   DLOG(INFO) << "Initializing " TVM_DISCO_CCL_NAME " with devices: " << device_ids;
@@ -46,63 +45,56 @@ void InitCCL(Session sess, ffi::Shape device_ids) {
 }
 
 void InitCCLPerWorker(ffi::Shape device_ids) {
-
+   
   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
   DiscoWorker* worker = DiscoWorker::ThreadLocal();
   ICHECK(worker != nullptr);
 
-  int Comm_size=0;
-  int Comm_rank=0;
-  MPI_CALL(MPI_Comm_size(MPI_COMM_WORLD, &Comm_size));
-  MPI_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &Comm_rank));
-  printf("Worker %d initializing " TVM_DISCO_CCL_NAME "...\n", worker->worker_id);
-  printf("Comm_size %d initializing "  "...\n",Comm_size);
-  printf("Comm_rank %d initializing "  "...\n",Comm_rank);
+  CHECK(!ctx->worker) << "Cannot initialize OpenMPI, "
+                      << "the previous thread-global worker still exists, "
+                      << "and has not been destructed";
 
+  // Step up local context of OpenMPI
+  int group_size = worker->num_workers / worker->num_groups;
+  int device_id = device_ids[worker->local_worker_id];
+  Device device{TVM_DISCO_DEVICE_TYPE, device_id};
+  
+  if (worker->default_device.device_type == DLDeviceType::kDLCPU) {
+    worker->default_device = device;
+  } else {
+    ICHECK(worker->default_device.device_type == device.device_type &&
+           worker->default_device.device_id == device.device_id)
+        << "The default device of the worker is inconsistent with the device used for CCL. "
+        << "The default device is " << worker->default_device << ", but the device used for CCL is "
+        << device << ".";
+  }
+  worker->ccl = TVM_DISCO_CCL_NAME;
+  ctx->worker = worker;
+  ctx->device_id = device_id;
+  MPI_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &ctx->comm_rank));
+  MPI_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &ctx->comm_size));
+  ctx->worker->worker_id = ctx->comm_rank;
 
-  // CHECK_EQ(unique_id_bytes.size(), NCCL_UNIQUE_ID_BYTES)
-  //     << "ValueError: The length of unique_id must be " << NCCL_UNIQUE_ID_BYTES << ", but got "
-  //     << unique_id_bytes.size() << ".";
+ std::ofstream fout("debug_log.txt", std::ios::out);
+    if (!fout.is_open()) {
+        std::cerr << "Failed to open debug_log.txt" << std::endl;
+   
+    }
 
-  // CHECK(!ctx->global_comm) << "Cannot initialize OpenMPI, "
-  //                          << "the previous thread-global comm still exists, "
-  //                          << "and has not been destructed";
-  // CHECK(!ctx->group_comm) << "Cannot initialize OpenMPI, "
-  //                         << "the previous thread-group comm still exists, "
-  //                         << "and has not been destructed";
-  // CHECK(!ctx->worker) << "Cannot initialize OpenMPI, "
-  //                     << "the previous thread-global worker still exists, "
-  //                     << "and has not been destructed";
+    // 寫入檔案
+    fout << "group size = " << group_size << std::endl;
+    fout << "worker->num_workers = " << w.num_workers << std::endl;
+    fout << "worker->num_groups = " << w.num_groups << std::endl;
+    fout << "device id = " << device_id << std::endl;
+    fout << "worker->local_worker_id = " << w.local_worker_id << std::endl;
+    fout << "worker->ccl = " << w.ccl << std::endl;
+    fout << "ctx->worker = " << ctx.worker << std::endl;
+    fout << "ctx->device_id = " << ctx.device_id << std::endl;
+    fout << "ctx->worker->worker_id = " << ctx.worker->worker_id << std::endl;
 
-  // // Step up local context of OpenMPI
-  // int group_size = worker->num_workers / worker->num_groups;
-  // int device_id = device_ids[worker->local_worker_id];
-  // SetDevice(device_id);
-  // Device device{TVM_DISCO_DEVICE_TYPE, device_id};
-  // if (worker->default_device.device_type == DLDeviceType::kDLCPU) {
-  //   worker->default_device = device;
-  // } else {
-  //   ICHECK(worker->default_device.device_type == device.device_type &&
-  //          worker->default_device.device_id == device.device_id)
-  //       << "The default device of the worker is inconsistent with the device used for CCL. "
-  //       << "The default device is " << worker->default_device << ", but the device used for CCL is "
-  //       << device << ".";
-  // }
-  // worker->ccl = TVM_DISCO_CCL_NAME;
-  // ctx->worker = worker;
-  // ctx->device_id = device_id;
-  // MPI_Init(NULL, NULL);
-  // printf("OpenMPI initialized successfully.\n");
-  // Initialize the communicator
-  // ncclUniqueId id;
-  // std::memcpy(id.internal, unique_id_bytes.data(), NCCL_UNIQUE_ID_BYTES);
-  // NCCL_CALL(ncclCommInitRank(&ctx->global_comm, worker->num_workers, id, worker->worker_id));
-  // if (worker->num_groups == 1) {
-  //   ctx->group_comm = ctx->global_comm;
-  // } else {
-  //   NCCL_CALL(ncclCommSplit(ctx->global_comm, worker->worker_id / group_size,
-  //                           worker->worker_id % group_size, &ctx->group_comm, NULL));
-  // }
+    fout.close(); // 關檔
+   
+
 }
 
 // void AllReduce(Tensor send, ReduceKind reduce_kind, bool in_group, Tensor recv) {
