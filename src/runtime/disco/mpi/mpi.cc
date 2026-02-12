@@ -27,7 +27,7 @@
 #include "../../../support/process_id.h"
 #include "../utils.h"
 #include "mpi_context.h"
-#include <fstream>
+// #include <fstream>
 
 namespace tvm {
 namespace runtime {
@@ -71,28 +71,29 @@ void InitCCLPerWorker(ffi::Shape device_ids) {
   worker->ccl = TVM_DISCO_CCL_NAME;
   ctx->worker = worker;
   ctx->device_id = device_id;
+  
+  MPI_CALL(MPI_Init(nullptr, nullptr));
   MPI_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &ctx->comm_rank));
   MPI_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &ctx->comm_size));
   ctx->worker->worker_id = ctx->comm_rank;
-
- std::ofstream fout("debug_log.txt", std::ios::out);
-    if (!fout.is_open()) {
-        std::cerr << "Failed to open debug_log.txt" << std::endl;
+//  std::ofstream fout("debug_log.txt", std::ios::out);
+//     if (!fout.is_open()) {
+//         std::cerr << "Failed to open debug_log.txt" << std::endl;
    
-    }
+//     }
 
-    // 寫入檔案
-    fout << "group size = " << group_size << std::endl;
-    fout << "worker->num_workers = " << worker->num_workers << std::endl;
-    fout << "worker->num_groups = " << worker->num_groups << std::endl;
-    fout << "device id = " << device_id << std::endl;
-    fout << "worker->local_worker_id = " << worker->local_worker_id << std::endl;
-    fout << "worker->ccl = " << worker->ccl << std::endl;
-    fout << "ctx->worker = " << ctx->worker << std::endl;
-    fout << "ctx->device_id = " << ctx->device_id << std::endl;
-    fout << "ctx->worker->worker_id = " << ctx->worker->worker_id << std::endl;
+//     // 寫入檔案
+//     fout << "group size = " << group_size << std::endl;
+//     fout << "worker->num_workers = " << worker->num_workers << std::endl;
+//     fout << "worker->num_groups = " << worker->num_groups << std::endl;
+//     fout << "device id = " << device_id << std::endl;
+//     fout << "worker->local_worker_id = " << worker->local_worker_id << std::endl;
+//     fout << "worker->ccl = " << worker->ccl << std::endl;
+//     fout << "ctx->worker = " << ctx->worker << std::endl;
+//     fout << "ctx->device_id = " << ctx->device_id << std::endl;
+//     fout << "ctx->worker->worker_id = " << ctx->worker->worker_id << std::endl;
 
-    fout.close(); // 關檔
+//     fout.close(); // 關檔
    
 
 }

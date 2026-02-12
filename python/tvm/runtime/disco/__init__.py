@@ -23,4 +23,5 @@ from .session import (
     Session,
     ThreadedSession,
     SocketSession,
+    MPISession,
 )

@@ -324,16 +324,6 @@ class Session(Object):
             The device IDs to be used by the underlying communication library.
         """
         assert ccl in ("nccl", "rccl", "mpi"), f"Unsupported CCL backend: {ccl}"
-        
-        if ccl == "mpi":
-            try:
-                from mpi4py import MPI
-            except ImportError as e:
-                raise ImportError(
-                    "ccl='mpi' requires mpi4py, but mpi4py is not installed. "
-                    "Please install it with: pip install mpi4py"
-            ) from e
-
         _ffi_api.SessionInitCCL(self, ccl, ShapeTuple(device_ids))  # type: ignore # pylint: disable=no-member
         self._clear_ipc_memory_pool()
 
@@ -619,6 +609,20 @@ class SocketSession(Session):
             num_groups,
             host,
             port,
+        )
+
+@register_global_func("runtime.disco.create_mpi_session_local_workers")
+def _create_mpi_session_local_workers() -> Session:
+    """Create the local session for each distributed node over mpi session."""
+    return ProcessSession(num_workers=1)
+
+
+@register_object("runtime.disco.MPISession")
+class MPISession(Session):
+    """A Disco session for MPI"""
+    def __init__(self,) -> None:
+        self.__init_handle_by_constructor__(
+            _ffi_api.MPISession,  # type: ignore # pylint: disable=no-member
         )
 
 
