@@ -32,11 +32,12 @@ class MPISessionObj : public BcastSessionObj {
  public:
 explicit MPISessionObj() {
 
+  // Reuse create_socket_session_local_workers to create local session.
   const auto f_create_local_session =
-        tvm::ffi::Function::GetGlobal("runtime.disco.create_mpi_session_local_workers");
+        tvm::ffi::Function::GetGlobal("runtime.disco.create_socket_session_local_workers");
   ICHECK(f_create_local_session.has_value())
-        << "Cannot find function runtime.disco.create_mpi_session_local_workers";
-    local_session_ = ((*f_create_local_session)()).cast<BcastSession>();
+        << "Cannot find function runtime.disco.create_socket_session_local_workers";
+  local_session_ = ((*f_create_local_session)(1)).cast<BcastSession>();
 
   MPI_CALL(MPI_Init(nullptr, nullptr));
   MPI_CALL(MPI_Comm_size(MPI_COMM_WORLD, &num_workers));
@@ -46,6 +47,8 @@ explicit MPISessionObj() {
   MPI_CALL(MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &local_comm));
   MPI_CALL(MPI_Comm_rank(local_comm, &local_rank));
   MPI_CALL(MPI_Comm_size(local_comm, &num_workers_per_node));
+  LOG(INFO) << "Number of processes on this node: " << num_workers_per_node 
+            << ". Initializing worker group with " << num_workers << " mpi processes.";
   
   DRef f_init_workers =
         local_session_->GetGlobalFunc("runtime.disco.mpi_session_init_workers");
@@ -58,15 +61,16 @@ explicit MPISessionObj() {
 }
 
  ffi::Any DebugGetFromRemote(int64_t reg_id, int worker_id) final {
-      ffi::Any result;  return result;
-  }
+      ffi::Any result;
+
+      return result;
+    }
+  
 
   void DebugSetRegister(int64_t reg_id, AnyView value, int worker_id) final {
 
   }
-    int64_t GetNumWorkers() override {
-      return local_rank;   // 你應該已經有 MPI world size
-  }
+  int64_t GetNumWorkers() final { return num_workers; }
 
   void BroadcastPacked(const ffi::PackedArgs& args) override {
       // 用 MPI_Bcast 實作
@@ -105,9 +109,8 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       .def("runtime.disco.MPISession", MPISession)
       .def("runtime.disco.mpi_session_init_workers",
            [](int num_workers, int local_rank, int num_groups, int num_workers_per_node, int world_rank) {
-             LOG(INFO) << "Initializing worker group with " << num_workers << " mpi processes,"
-                       << " and local worker id : " << local_rank << " & world worker id : " << world_rank
-                       << " with " << num_groups << " groups. Number of processes on this node: " << num_workers_per_node;
+             LOG(INFO) << "Initializing local worker  : " << local_rank << " & it's world worker id : " << world_rank
+                       << " with " << num_groups << " groups.";
   
              DiscoWorker* worker = DiscoWorker::ThreadLocal();
              worker->local_worker_id = local_rank;

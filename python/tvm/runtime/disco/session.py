@@ -611,12 +611,6 @@ class SocketSession(Session):
             port,
         )
 
-@register_global_func("runtime.disco.create_mpi_session_local_workers")
-def _create_mpi_session_local_workers() -> Session:
-    """Create the local session for each distributed node over mpi session."""
-    return ProcessSession(num_workers=1)
-
-
 @register_object("runtime.disco.MPISession")
 class MPISession(Session):
     """A Disco session for MPI"""

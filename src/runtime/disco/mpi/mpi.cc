@@ -72,10 +72,9 @@ void InitCCLPerWorker(ffi::Shape device_ids) {
   ctx->worker = worker;
   ctx->device_id = device_id;
   
-  MPI_CALL(MPI_Init(nullptr, nullptr));
   MPI_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &ctx->comm_rank));
   MPI_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &ctx->comm_size));
-  ctx->worker->worker_id = ctx->comm_rank;
+  
 //  std::ofstream fout("debug_log.txt", std::ios::out);
 //     if (!fout.is_open()) {
 //         std::cerr << "Failed to open debug_log.txt" << std::endl;
