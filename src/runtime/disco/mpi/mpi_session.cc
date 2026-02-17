@@ -26,8 +26,6 @@
 namespace tvm {
 namespace runtime {
 
-
-
 class MPISessionObj : public BcastSessionObj {
  public:
 explicit MPISessionObj() {
@@ -49,16 +47,15 @@ explicit MPISessionObj() {
   MPI_CALL(MPI_Comm_size(local_comm, &num_workers_per_node));
   LOG(INFO) << "Number of processes on this node: " << num_workers_per_node 
             << ". Initializing worker group with " << num_workers << " mpi processes.";
-  
+  MPI_CALL(MPI_Comm_free(&local_comm));
   DRef f_init_workers =
         local_session_->GetGlobalFunc("runtime.disco.mpi_session_init_workers");
     local_session_->CallPacked(f_init_workers, num_workers, local_rank, 1 /*num_groups = 1*/, num_workers_per_node, world_rank);
   
 }
 
-~MPISessionObj() {
-  MPI_CALL(MPI_Finalize());
-}
+~MPISessionObj() { MPI_CALL(MPI_Finalize());}
+int64_t GetNumWorkers() final { return num_workers; }
 
  ffi::Any DebugGetFromRemote(int64_t reg_id, int worker_id) final {
       ffi::Any result;
@@ -70,10 +67,10 @@ explicit MPISessionObj() {
   void DebugSetRegister(int64_t reg_id, AnyView value, int worker_id) final {
 
   }
-  int64_t GetNumWorkers() final { return num_workers; }
 
   void BroadcastPacked(const ffi::PackedArgs& args) override {
-      // 用 MPI_Bcast 實作
+
+    // MPI_CALL(MPI_Bcast(args.data(), args.size(), MPI_INT, 0, MPI_COMM_WORLD));
   }
 
   void SendPacked(int worker_id,
@@ -92,7 +89,7 @@ explicit MPISessionObj() {
   int num_workers;
   int local_rank;
   int world_rank;
-
+   
   BcastSession local_session_{nullptr};
 };
 

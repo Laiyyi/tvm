@@ -47,12 +47,44 @@ namespace mpi {
 
 const constexpr DLDeviceType TVM_DISCO_DEVICE_TYPE = DLDeviceType::kDLCPU;
 
+/*! \brief Convert DataType to MPIDataType. */
+inline MPI_Datatype AsMPIDataType(runtime::DataType dtype) {
+  if (dtype == DataType::Int(8) || dtype == DataType::Int(32)) {
+    return MPI_INT;
+  }
+  if (dtype == DataType::UInt(32)) {
+    return MPI_UNSIGNED;
+  }
+  if (dtype == DataType::Int(64)) {
+    return MPI_LONG;
+  }
+  if (dtype == DataType::UInt(64)) {
+    return MPI_UNSIGNED_LONG;
+  }
+
+  if (dtype == DataType::Float(32)) {
+    return MPI_FLOAT;
+  }
+  if (dtype == DataType::Float(64)) {
+    return MPI_DOUBLE;
+  }
+
+  if (dtype == DataType::UInt(8) || dtype == DataType::Float8E4M3FN() ||
+      dtype == DataType::Float8E5M2() || dtype == DataType::Float(16) ||dtype == DataType::BFloat(16)) {
+    // For float8, float16, and bfloat16 data types, pretend to use MPI_UNSIGNED in MPI.
+    // Note: Reductions (Allreduce, etc.) may produce incorrect results or throw errors, 
+    // because MPI does not natively support these types.
+    return MPI_UNSIGNED;
+  }
+  LOG(FATAL) << "ValueError: Unsupported data type " << dtype;
+  throw;
+}
+
+
 struct CCLThreadLocalContext {
   DiscoWorker* worker = nullptr;
   int device_id;
-  int comm_size;
-  int comm_rank;
-  ~CCLThreadLocalContext() { Clear(); }
+   ~CCLThreadLocalContext() { Clear(); }
   
   void Clear() { worker = nullptr; MPI_CALL(MPI_Finalize());}
   

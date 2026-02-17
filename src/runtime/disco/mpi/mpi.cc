@@ -27,7 +27,8 @@
 #include "../../../support/process_id.h"
 #include "../utils.h"
 #include "mpi_context.h"
-// #include <fstream>
+#include <climits>
+#include <fstream>
 
 namespace tvm {
 namespace runtime {
@@ -37,6 +38,27 @@ CCLThreadLocalContext* CCLThreadLocalContext::Get() {
   thread_local static CCLThreadLocalContext ctx;
   return &ctx;
 }
+
+inline MPI_Op AsMPIRedOp(ReduceKind kind) {
+    switch (kind) {
+        case ReduceKind::kSum:
+            return MPI_SUM;
+        case ReduceKind::kProd:
+            return MPI_PROD;
+        case ReduceKind::kMin:
+            return MPI_MIN;
+        case ReduceKind::kMax:
+            return MPI_MAX;
+        case ReduceKind::kAvg:
+            // MPI 沒有內建 AVG，需要自己計算 sum/count
+            LOG(FATAL) << "ReduceKind::kAvg not directly supported in MPI";
+    }
+    LOG(FATAL) << "ValueError: Unknown ReduceKind: " << static_cast<int>(kind);
+    throw ;
+    
+}
+
+
 
 void InitCCL(Session sess, ffi::Shape device_ids) {
   DRef func = sess->GetGlobalFunc("runtime.disco." TVM_DISCO_CCL_NAME ".init_ccl_per_worker");
@@ -55,11 +77,14 @@ void InitCCLPerWorker(ffi::Shape device_ids) {
                       << "and has not been destructed";
 
   // Step up local context of OpenMPI
-  int group_size = worker->num_workers / worker->num_groups;
-  int device_id = device_ids[worker->local_worker_id];
+  // Assuming that the number of workers per node is uniform
+  int group_size = worker->num_workers;
+  int num_workers_per_node = group_size / device_ids.size();
+  int index = worker->worker_id / num_workers_per_node;
+  int device_id = device_ids[index];
+
   Device device{TVM_DISCO_DEVICE_TYPE, device_id};
-  
-  if (worker->default_device.device_type == DLDeviceType::kDLCPU) {
+    if (worker->default_device.device_type == DLDeviceType::kDLCPU) {
     worker->default_device = device;
   } else {
     ICHECK(worker->default_device.device_type == device.device_type &&
@@ -72,241 +97,431 @@ void InitCCLPerWorker(ffi::Shape device_ids) {
   ctx->worker = worker;
   ctx->device_id = device_id;
   
-  MPI_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &ctx->comm_rank));
-  MPI_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &ctx->comm_size));
-  
-//  std::ofstream fout("debug_log.txt", std::ios::out);
-//     if (!fout.is_open()) {
-//         std::cerr << "Failed to open debug_log.txt" << std::endl;
+  std::ofstream fout("debug_log.txt", std::ios::out);
+    if (!fout.is_open()) {
+        std::cerr << "Failed to open debug_log.txt" << std::endl;
    
-//     }
+    }
 
-//     // 寫入檔案
-//     fout << "group size = " << group_size << std::endl;
-//     fout << "worker->num_workers = " << worker->num_workers << std::endl;
-//     fout << "worker->num_groups = " << worker->num_groups << std::endl;
-//     fout << "device id = " << device_id << std::endl;
-//     fout << "worker->local_worker_id = " << worker->local_worker_id << std::endl;
-//     fout << "worker->ccl = " << worker->ccl << std::endl;
-//     fout << "ctx->worker = " << ctx->worker << std::endl;
-//     fout << "ctx->device_id = " << ctx->device_id << std::endl;
-//     fout << "ctx->worker->worker_id = " << ctx->worker->worker_id << std::endl;
+    // 寫入檔案
+    fout << "group size = " << group_size << std::endl;
+    fout << "worker->num_workers = " << worker->num_workers << std::endl;
+    fout << "worker->num_groups = " << worker->num_groups << std::endl;
+    fout << "device id = " << device_id << std::endl;
+    fout << "worker->local_worker_id = " << worker->local_worker_id << std::endl;
+    fout << "worker->ccl = " << worker->ccl << std::endl;
+    fout << "ctx->worker = " << ctx->worker << std::endl;
+    fout << "ctx->device_id = " << ctx->device_id << std::endl;
+    fout << "ctx->worker->worker_id = " << ctx->worker->worker_id << std::endl;
 
-//     fout.close(); // 關檔
+    fout.close(); // 關檔
    
 
 }
 
-// void AllReduce(Tensor send, ReduceKind reduce_kind, bool in_group, Tensor recv) {
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   ffi::Shape shape = send.Shape();
-//   int64_t numel = shape->Product();
-//   deviceStream_t stream = ctx->GetDefaultStream();
-//   DataType dtype = DataType(send->dtype);
-//   if (dtype == DataType::Float8E4M3FN() || dtype == DataType::Float8E5M2()) {
-//     LOG(FATAL) << "Float8 data type cannot be allreduced, as nccl does not support this data type.";
-//   }
-//   NCCL_CALL(ncclAllReduce(send->data, recv->data, numel,
-//                           /*datatype=*/AsNCCLDataType(dtype),
-//                           /*op=*/AsNCCLRedOp(reduce_kind),
-//                           in_group ? ctx->group_comm : ctx->global_comm, stream));
-// }
+void AllReduce(Tensor send, ReduceKind reduce_kind, bool in_group, Tensor recv) {
+  CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+  ffi::Shape shape = send.Shape();
+  int64_t numel = shape->Product();
 
-// void AllGather(Tensor send, bool in_group, Tensor recv) {
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   ffi::Shape shape = send.Shape();
-//   int64_t numel = shape->Product();
-//   deviceStream_t stream = ctx->GetDefaultStream();
-//   NCCL_CALL(ncclAllGather(send->data, recv->data, numel,
-//                           /*datatype=*/AsNCCLDataType(DataType(send->dtype)),
-//                           in_group ? ctx->group_comm : ctx->global_comm, stream));
-// }
+  DataType dtype = DataType(send->dtype);
+  int64_t offset = 0;
+  int batch = INT_MAX;
 
-// void BroadcastFromWorker0(ffi::Optional<Tensor> send, bool in_group, Tensor recv) {
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   int worker_id = ctx->worker->worker_id;
-//   int group_size = ctx->worker->num_workers / ctx->worker->num_groups;
-//   bool is_sender = (worker_id == 0 && !in_group) || (in_group && worker_id % group_size == 0);
+  while (offset < numel) {
+    int this_count = (int)std::min((int64_t)batch, numel - offset);
 
-//   const void* send_data = [&]() -> const void* {
-//     if (is_sender) {
-//       CHECK(send.defined());
-//       CHECK(send.value().Shape().Product() == recv.Shape().Product());
-//       return send.value()->data;
-//     } else {
-//       return nullptr;
-//     }
-//   }();
-//   int64_t numel = recv.Shape().Product();
+    MPI_CALL(MPI_Allreduce(send->data + offset,
+                  recv->data + offset,
+                  this_count,
+                  /*datatype=*/AsMPIDataType(dtype),
+                  /*op=*/AsMPIRedOp(reduce_kind),
+                  MPI_COMM_WORLD));
+    offset += this_count;
+  }
 
-//   deviceStream_t stream = ctx->GetDefaultStream();
-//   NCCL_CALL(ncclBroadcast(send_data, recv->data, numel,
-//                           /*datatype=*/AsNCCLDataType(DataType(recv->dtype)),
-//                           /*root=*/0, in_group ? ctx->group_comm : ctx->global_comm, stream));
-// }
+}
 
-// void ScatterFromWorker0(ffi::Optional<Tensor> send, bool in_group, Tensor recv) {
-//   CHECK(recv.defined()) << "ValueError: buffer `recv` must not be None";
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   int worker_id = ctx->worker->worker_id;
-//   int num_workers = ctx->worker->num_workers;
-//   int group_size = num_workers / ctx->worker->num_groups;
-//   bool is_sender = (worker_id == 0 && !in_group) || (in_group && worker_id % group_size == 0);
-//   int num_receiver = in_group ? group_size : num_workers;
-//   deviceStream_t stream = ctx->GetDefaultStream();
-//   if (is_sender) {
-//     CHECK(send.defined()) << "ValueError: buffer `send` must be provided when worker_id == 0.";
-//     Tensor buffer = send.value();
-//     int64_t numel = buffer.Shape().Product();
-//     CHECK_EQ(numel % num_receiver, 0) << "ValueError: Scattering evenly requires that the number "
-//                                          "of elements in the buffer to be "
-//                                          "divisible by the number of workers, but got numel = "
-//                                       << numel << " and " << num_receiver << " workers.";
-//     DataType dtype(buffer->dtype);
-//     int64_t numel_per_shard = numel / num_receiver;
-//     int64_t bytes_per_shard = numel_per_shard * dtype.bytes();
-//     CHECK_EQ(numel_per_shard, recv.Shape().Product())
-//         << "ValueError: The number of elements in buffer `recv` must be the same as each shard "
-//            "of "
-//            "buffer `send`. `send.size` is "
-//         << numel << ", but `recv.size` is " << recv.Shape().Product() << ".";
-//     NCCL_CALL(ncclGroupStart());
-//     uint8_t* data = static_cast<uint8_t*>(buffer->data);
-//     for (int i = 0; i < num_receiver; ++i) {
-//       NCCL_CALL(ncclSend(data, numel_per_shard, AsNCCLDataType(dtype), i,
-//                          in_group ? ctx->group_comm : ctx->global_comm, stream));
-//       data += bytes_per_shard;
-//     }
-//   } else {
-//     if (send.defined()) {
-//       LOG(WARNING) << "ValueError: buffer `send` must be None when (worker_id != 0 && !in_group) "
-//                       "or (worker_id % group_size != 0 && in_group). However, got send = "
-//                    << send.get() << ". This will be ignored.";
-//     }
-//     NCCL_CALL(ncclGroupStart());
-//   }
-//   int64_t numel = recv.Shape().Product();
-//   DataType dtype(recv->dtype);
-//   NCCL_CALL(ncclRecv(recv->data, numel, AsNCCLDataType(dtype), 0,
-//                      in_group ? ctx->group_comm : ctx->global_comm, stream));
-//   NCCL_CALL(ncclGroupEnd());
-// }
+void AllGather(Tensor send, bool in_group, Tensor recv) {
+  CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+  ffi::Shape shape = send.Shape();
+  int64_t numel = shape->Product();
 
-// void GatherToWorker0(Tensor send, bool in_group, ffi::Optional<Tensor> recv) {
-//   CHECK(send.defined()) << "ValueError: buffer `send` must not be None";
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   int worker_id = ctx->worker->worker_id;
-//   int num_workers = ctx->worker->num_workers;
-//   int group_size = num_workers / ctx->worker->num_groups;
-//   bool is_sender = (worker_id == 0 && !in_group) || (in_group && worker_id % group_size == 0);
-//   int num_receiver = in_group ? group_size : num_workers;
-//   deviceStream_t stream = ctx->GetDefaultStream();
-//   if (is_sender) {
-//     CHECK(recv.defined()) << "ValueError: buffer `recv` must be provided when worker_id == 0.";
-//     Tensor buffer = recv.value();
-//     int64_t numel = buffer.Shape().Product();
-//     CHECK_EQ(numel % num_receiver, 0) << "ValueError: Gathering evenly requires that the number "
-//                                          "of elements in the buffer to be "
-//                                          "divisible by the number of workers, but got numel = "
-//                                       << numel << " and " << num_receiver << " workers.";
-//     DataType dtype(buffer->dtype);
-//     int64_t numel_per_shard = numel / num_receiver;
-//     int64_t bytes_per_shard = numel_per_shard * dtype.bytes();
-//     CHECK_EQ(numel_per_shard, send.Shape().Product())
-//         << "ValueError: The number of elements in buffer `send` must be the same as each shard "
-//            "of "
-//            "buffer `recv`. `recv.size` is "
-//         << numel << ", but `send.size` is " << send.Shape().Product() << ".";
-//     NCCL_CALL(ncclGroupStart());
-//     uint8_t* data = static_cast<uint8_t*>(buffer->data);
-//     for (int i = 0; i < num_receiver; ++i) {
-//       NCCL_CALL(ncclRecv(data, numel_per_shard, AsNCCLDataType(dtype), i,
-//                          in_group ? ctx->group_comm : ctx->global_comm, stream));
-//       data += bytes_per_shard;
-//     }
-//   } else {
-//     if (recv.defined()) {
-//       LOG(WARNING) << "ValueError: buffer `recv` must be None when (worker_id != 0 && !in_group) "
-//                       "or (worker_id % group_size != 0 && in_group). However, got recv = "
-//                    << recv.get() << ". This will be ignored.";
-//     }
-//     NCCL_CALL(ncclGroupStart());
-//   }
-//   int64_t numel = send.Shape().Product();
-//   DataType dtype(send->dtype);
-//   NCCL_CALL(ncclSend(send->data, numel, AsNCCLDataType(dtype), 0,
-//                      in_group ? ctx->group_comm : ctx->global_comm, stream));
-//   NCCL_CALL(ncclGroupEnd());
-// }
+  DataType dtype = DataType(send->dtype);
+  int64_t offset = 0;
 
-// void RecvFromWorker0(Tensor buffer) {
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   deviceStream_t stream = ctx->GetDefaultStream();
-//   CHECK_NE(ctx->worker->worker_id, 0)
-//       << "ValueError: Worker 0 is not allowed to call RecvFromWorker0.";
-//   NCCL_CALL(ncclGroupStart());
-//   NCCL_CALL(ncclRecv(buffer->data, buffer.Shape().Product(), AsNCCLDataType(buffer.DataType()), 0,
-//                      ctx->global_comm, stream));
-//   NCCL_CALL(ncclGroupEnd());
-// }
+  while (offset < numel) {
+    int chunk = std::min((int64_t)INT_MAX, numel - offset);
 
-// void SendToNextGroup(Tensor buffer) {
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   deviceStream_t stream = ctx->GetDefaultStream();
-//   int worker_id = ctx->worker->worker_id;
-//   int group_size = ctx->worker->num_workers / ctx->worker->num_groups;
-//   int receiver_id = worker_id + group_size;
-//   CHECK_LT(receiver_id, ctx->worker->num_workers)
-//       << "The current group is already the last group and there is no such a next group.";
-//   NCCL_CALL(ncclGroupStart());
-//   NCCL_CALL(ncclSend(buffer->data, buffer.Shape().Product(), AsNCCLDataType(buffer.DataType()),
-//                      receiver_id, ctx->global_comm, stream));
-//   NCCL_CALL(ncclGroupEnd());
-// }
+    MPI_CALL(MPI_Allgather(
+        send->data + offset,
+        chunk,
+        /*datatype=*/AsMPIDataType(dtype),
+        recv->data + offset * ctx->worker->num_workers,
+        chunk,
+        /*datatype=*/AsMPIDataType(dtype),
+        MPI_COMM_WORLD
+     ));
 
-// void RecvFromPrevGroup(Tensor buffer) {
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   deviceStream_t stream = ctx->GetDefaultStream();
-//   int worker_id = ctx->worker->worker_id;
-//   int group_size = ctx->worker->num_workers / ctx->worker->num_groups;
-//   int sender_id = worker_id - group_size;
-//   CHECK_GE(sender_id, 0)
-//       << "The current group is already the first group and there is no such a previous group.";
-//   NCCL_CALL(ncclGroupStart());
-//   NCCL_CALL(ncclRecv(buffer->data, buffer.Shape().Product(), AsNCCLDataType(buffer.DataType()),
-//                      sender_id, ctx->global_comm, stream));
-//   NCCL_CALL(ncclGroupEnd());
-// }
+    offset += chunk;
+   }
 
-// void SendToWorker(Tensor buffer, int receiver_id) {
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   deviceStream_t stream = ctx->GetDefaultStream();
-//   int worker_id = ctx->worker->worker_id;
-//   CHECK(receiver_id >= 0 && receiver_id < ctx->worker->num_workers)
-//       << "Invalid receiver id " << receiver_id << ". The world size is "
-//       << ctx->worker->num_workers;
-//   CHECK_NE(worker_id, receiver_id) << "Cannot send to worker itself.";
-//   NCCL_CALL(ncclSend(buffer->data, buffer.Shape().Product(), AsNCCLDataType(buffer.DataType()),
-//                      receiver_id, ctx->global_comm, stream));
-// }
+ 
+}
 
-// void RecvFromWorker(Tensor buffer, int sender_id) {
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   deviceStream_t stream = ctx->GetDefaultStream();
-//   int worker_id = ctx->worker->worker_id;
-//   CHECK(sender_id >= 0 && sender_id < ctx->worker->num_workers)
-//       << "Invalid sender id " << sender_id << ". The world size is " << ctx->worker->num_workers;
-//   CHECK_NE(worker_id, sender_id) << "Cannot receive from the worker itself.";
-//   NCCL_CALL(ncclRecv(buffer->data, buffer.Shape().Product(), AsNCCLDataType(buffer.DataType()),
-//                      sender_id, ctx->global_comm, stream));
-// }
+void BroadcastFromWorker0(ffi::Optional<Tensor> send, bool in_group, Tensor recv) {
+  CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+  int worker_id = ctx->worker->worker_id;
+  int group_size = ctx->worker->num_workers;
+  bool is_sender = (worker_id == 0 && !in_group) || (in_group && worker_id % group_size == 0);
+  int64_t numel = recv.Shape().Product();
+ 
+  int64_t offset = 0;
+  DataType dtype = DataType(recv->dtype);
+  int type_size;
+  MPI_Type_size(AsMPIDataType(dtype), &type_size);
 
-// void SyncWorker() {
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   ICHECK(ctx->worker != nullptr);
-//   deviceStream_t stream = ctx->GetDefaultStream();
-//   StreamSynchronize(stream);
-// }
+   // Root 先把資料 copy 到 recv buffer
+  if (is_sender) {
+    CHECK(send.defined());
+    CHECK(send.value().Shape().Product() == numel);
+
+    std::memcpy(recv->data,
+                send.value()->data,
+                numel * type_size);
+  }
+  
+
+  while (offset < numel) {
+    int chunk = static_cast<int>(std::min<int64_t>(INT_MAX, numel - offset));
+
+    void* chunk_ptr = static_cast<char*>(recv->data) + offset * type_size;
+
+    MPI_CALL(MPI_Bcast(chunk_ptr, chunk, AsMPIDataType(dtype),/*root=*/0, MPI_COMM_WORLD));
+
+    offset += chunk;
+  }
+}
+
+void ScatterFromWorker0(ffi::Optional<Tensor> send, bool in_group, Tensor recv) {
+  CHECK(recv.defined()) << "ValueError: buffer `recv` must not be None";
+  CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+  int worker_id = ctx->worker->worker_id;
+  int num_workers = ctx->worker->num_workers;
+  int group_size = ctx->worker->num_workers;
+  bool is_sender = (worker_id == 0 && !in_group) || (in_group && worker_id % group_size == 0);
+  int num_receiver = in_group ? group_size : num_workers;
+ 
+  bool is_sender =  (worker_id == 0 && !in_group) || (in_group && worker_id % group_size == 0);
+
+  int type_size;
+  MPI_Type_size(AsMPIDataType(DataType(recv->dtype)), &type_size);
+
+  int64_t numel_per_shard = recv.Shape().Product();
+
+  // ---------- Root 檢查 ----------
+  if (is_sender) {
+    CHECK(send.defined())
+        << "ValueError: send must be provided when root.";
+
+    Tensor buffer = send.value();
+    int64_t total_numel = buffer.Shape().Product();
+
+    CHECK_EQ(total_numel % num_receiver, 0)
+        << "Scatter requires total elements divisible by number of receivers.";
+
+    CHECK_EQ(total_numel / num_receiver,
+             numel_per_shard)
+        << "recv size mismatch.";
+  }
+
+  // ---------- int64 安全 scatter ----------
+  int64_t offset = 0;
+
+  while (offset < numel_per_shard) {
+
+    int chunk = static_cast<int>(
+        std::min<int64_t>(INT_MAX,
+                          numel_per_shard - offset));
+
+    void* recv_chunk =
+        static_cast<char*>(recv->data) +
+        offset * type_size;
+
+    const void* send_chunk = nullptr;
+
+    if (is_sender) {
+      send_chunk =
+          static_cast<char*>(send.value()->data) +
+          (ctx->worker->worker_id * numel_per_shard + offset) * type_size;
+    }
+
+    MPI_CALL(MPI_Scatter(
+        send_chunk,        // root only meaningful
+        chunk,             // sendcount per rank
+        AsMPIDataType(DataType(recv->dtype)),
+        recv_chunk,
+        chunk,
+        AsMPIDataType(DataType(recv->dtype)),
+        /*root=*/0,
+        MPI_COMM_WORLD));
+
+    offset += chunk;
+  }
+}
+
+void GatherToWorker0(Tensor send, bool in_group, ffi::Optional<Tensor> recv) {
+  CHECK(send.defined()) << "ValueError: buffer `send` must not be None";
+  CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+  int worker_id = ctx->worker->worker_id;
+  int num_workers = ctx->worker->num_workers;
+  int group_size = num_workers;
+  bool is_sender = (worker_id == 0 && !in_group) || (in_group && worker_id % group_size == 0);
+  int num_receiver = in_group ? group_size : num_workers;
+
+  int64_t numel_send = send.Shape().Product();
+
+  MPI_Datatype dtype = AsMPIDataType(DataType(send->dtype));
+  int type_size;
+  MPI_Type_size(dtype, &type_size);
+
+  // ---------- root 檢查 ----------
+  if (is_sender) {
+    CHECK(recv.defined())
+        << "ValueError: recv buffer must be provided on root";
+
+    Tensor recv_buf = recv.value();
+    int64_t numel_recv = recv_buf.Shape().Product();
+
+    CHECK_EQ(numel_recv % num_receiver, 0)
+        << "Gather requires recv numel divisible by num_receiver";
+
+    int64_t numel_per_shard = numel_recv / num_receiver;
+    CHECK_EQ(numel_per_shard, numel_send)
+        << "send.size must match each shard in recv";
+  }
+
+  // ---------- int64 安全版本 ----------
+  int64_t offset = 0;
+  int64_t numel_per_shard = numel_send;
+
+  while (offset < numel_per_shard) {
+    int chunk = static_cast<int>(
+        std::min<int64_t>(INT_MAX, numel_per_shard - offset));
+
+    void* send_ptr =
+        static_cast<char*>(send->data) + offset * type_size;
+
+    void* recv_ptr = nullptr;
+    if (is_sender) {
+      recv_ptr =
+          static_cast<char*>(recv.value()->data) +
+          offset * type_size;
+    }
+
+    MPI_CALL(MPI_Gather(
+        send_ptr,
+        chunk,
+        dtype,
+        recv_ptr,   // only root meaningful
+        chunk,
+        dtype,
+        /*root=*/0,
+        MPI_COMM_WORLD));
+
+    offset += chunk;
+  }
+}
+
+void RecvFromWorker0(Tensor buffer) {
+  CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+  
+  CHECK_NE(ctx->worker->worker_id, 0)
+      << "ValueError: Worker 0 is not allowed to call RecvFromWorker0.";
+  DataType dtype(buffer->dtype);
+  MPI_Datatype mpi_dtype = AsMPIDataType(dtype);
+
+  int type_size;
+  MPI_Type_size(mpi_dtype, &type_size);
+
+  int64_t numel = buffer.Shape().Product();
+
+  // ---------- int64 safe recv ----------
+  int64_t offset = 0;
+  while (offset < numel) {
+      int chunk = static_cast<int>(std::min<int64_t>(INT_MAX, numel - offset));
+      void* chunk_ptr = static_cast<char*>(buffer->data) + offset * type_size;
+
+        MPI_CALL(MPI_Recv(
+            chunk_ptr,
+            chunk,
+            mpi_dtype,
+            /*source=*/0,
+            /*tag=*/0,
+            MPI_COMM_WORLD,
+            MPI_STATUS_IGNORE));
+
+        offset += chunk;
+    }
+}
+
+void SendToNextGroup(Tensor buffer) {
+  CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+  
+  int worker_id = ctx->worker->worker_id;
+  int group_size = ctx->worker->num_workers;
+  int receiver_id = worker_id + group_size;
+  int num_groups = ctx->worker->num_groups;
+  CHECK_LT(receiver_id, ctx->worker->num_workers)
+      << "The current group is already the last group and there is no such a next group.";
+
+  DataType dtype(buffer->dtype);
+  MPI_Datatype mpi_dtype = AsMPIDataType(dtype);
+
+    int type_size;
+    MPI_Type_size(mpi_dtype, &type_size);
+
+    int64_t numel = buffer.Shape().Product();
+
+    // ---------- int64-safe send ----------
+    int64_t offset = 0;
+    while (offset < numel) {
+        int chunk = static_cast<int>(std::min<int64_t>(INT_MAX, numel - offset));
+
+        void* chunk_ptr = static_cast<char*>(buffer->data) + offset * type_size;
+
+        MPI_CALL(MPI_Send(
+            chunk_ptr,
+            chunk,
+            mpi_dtype,
+            receiver_id,
+            /*tag=*/0,
+            MPI_COMM_WORLD));
+
+        offset += chunk;
+    }
+  
+}
+
+void RecvFromPrevGroup(Tensor buffer) {
+    CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+    int worker_id = ctx->worker->worker_id;
+    int world_size = ctx->worker->num_workers;
+    int num_groups = ctx->worker->num_groups;
+
+    int group_size = world_size / num_groups;
+    int sender_id = worker_id - group_size;
+
+    CHECK_GE(sender_id, 0)
+        << "The current group is already the first group and there is no previous group.";
+
+    
+    DataType dtype(buffer->dtype);
+    MPI_Datatype mpi_dtype = AsMPIDataType(dtype);
+
+    int type_size;
+    MPI_Type_size(mpi_dtype, &type_size);
+
+    int64_t numel = buffer.Shape().Product();
+
+    // ---------- int64-safe recv ----------
+    int64_t offset = 0;
+    while (offset < numel) {
+        int chunk = static_cast<int>(std::min<int64_t>(INT_MAX, numel - offset));
+
+        void* chunk_ptr = static_cast<char*>(buffer->data) + offset * type_size;
+
+        MPI_CALL(MPI_Recv(
+            chunk_ptr,
+            chunk,
+            mpi_dtype,
+            sender_id,
+            /*tag=*/0,
+            MPI_COMM_WORLD,
+            MPI_STATUS_IGNORE));
+
+        offset += chunk;
+    }
+}
+
+void SendToWorker(Tensor buffer, int receiver_id) {
+  CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+  int worker_id = ctx->worker->worker_id;
+  CHECK(receiver_id >= 0 && receiver_id < ctx->worker->num_workers)
+      << "Invalid receiver id " << receiver_id << ". The world size is "
+      << ctx->worker->num_workers;
+  CHECK_NE(worker_id, receiver_id) << "Cannot send to worker itself.";
+  DataType dtype(buffer->dtype);
+  MPI_Datatype mpi_dtype = AsMPIDataType(dtype);
+
+  int type_size;
+  MPI_Type_size(mpi_dtype, &type_size);
+
+    int64_t numel = buffer.Shape().Product();
+
+    // ---------- int64 safe send ----------
+    int64_t offset = 0;
+    while (offset < numel) {
+        int chunk = static_cast<int>(
+            std::min<int64_t>(INT_MAX, numel - offset));
+
+        void* chunk_ptr = static_cast<char*>(buffer->data) + offset * type_size;
+
+        MPI_CALL(MPI_Send(
+            chunk_ptr,
+            chunk,
+            mpi_dtype,
+            /*dest=*/receiver_id,
+            /*tag=*/0,
+            MPI_COMM_WORLD));
+
+        offset += chunk;
+    }
+ 
+}
+
+void RecvFromWorker(Tensor buffer, int sender_id) {
+  CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+  int world_size = ctx->worker->num_workers;
+  int worker_id = ctx->worker->worker_id;
+  CHECK(sender_id >= 0 && sender_id < ctx->worker->num_workers)
+      << "Invalid sender id " << sender_id << ". The world size is " << ctx->worker->num_workers;
+  CHECK_NE(worker_id, sender_id) << "Cannot receive from the worker itself.";
+   DataType dtype(buffer->dtype);
+    MPI_Datatype mpi_dtype = AsMPIDataType(dtype);
+
+    int type_size;
+    MPI_Type_size(mpi_dtype, &type_size);
+
+    int64_t numel = buffer.Shape().Product();
+
+    // ---------- int64 safe recv ----------
+    int64_t offset = 0;
+    while (offset < numel) {
+        int chunk = static_cast<int>(
+            std::min<int64_t>(INT_MAX, numel - offset));
+
+        void* chunk_ptr = static_cast<char*>(buffer->data) + offset * type_size;
+
+        MPI_CALL(MPI_Recv(
+            chunk_ptr,
+            chunk,
+            mpi_dtype,
+            /*source=*/sender_id,
+            /*tag=*/0,
+            MPI_COMM_WORLD,
+            MPI_STATUS_IGNORE));
+
+        offset += chunk;
+    }
+  
+}
+
+void SyncWorker() {
+  CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+  ICHECK(ctx->worker != nullptr);
+  MPI_CALL(MPI_Barrier(MPI_COMM_WORLD));
+}
 
    TVM_FFI_STATIC_INIT_BLOCK() {
    namespace refl = tvm::ffi::reflection;
