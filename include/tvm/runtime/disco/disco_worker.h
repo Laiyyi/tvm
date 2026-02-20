@@ -93,7 +93,8 @@ class DiscoWorker {
   DiscoChannel* channel;
   /*! \brief The registers in the worker */
   std::vector<ffi::Any> register_file;
-
+  /*! \brief Worker count per node (indexed by node ID). */
+  std::vector<int> workers_per_node;
   struct Impl;
   friend struct DiscoWorker::Impl;
 };

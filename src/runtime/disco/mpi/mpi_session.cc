@@ -45,28 +45,23 @@ explicit MPISessionObj() {
   MPI_CALL(MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &local_comm));
   MPI_CALL(MPI_Comm_rank(local_comm, &local_rank));
   MPI_CALL(MPI_Comm_size(local_comm, &num_workers_per_node));
-  LOG(INFO) << "Number of processes on this node: " << num_workers_per_node 
-            << ". Initializing worker group with " << num_workers << " mpi processes.";
   MPI_CALL(MPI_Comm_free(&local_comm));
+  
   DRef f_init_workers =
         local_session_->GetGlobalFunc("runtime.disco.mpi_session_init_workers");
     local_session_->CallPacked(f_init_workers, num_workers, local_rank, 1 /*num_groups = 1*/, num_workers_per_node, world_rank);
   
 }
 
-~MPISessionObj() { MPI_CALL(MPI_Finalize());}
-int64_t GetNumWorkers() final { return num_workers; }
+ ~MPISessionObj() { MPI_CALL(MPI_Finalize());}
+ int64_t GetNumWorkers() final { return num_workers; }
 
- ffi::Any DebugGetFromRemote(int64_t reg_id, int worker_id) final {
-      ffi::Any result;
 
-      return result;
-    }
+ //debug_get_from_remote < python端用這個呼叫，給workerid然後回傳資料.numpy() 就是從幾號員工拿資料
+ ffi::Any DebugGetFromRemote(int64_t reg_id, int worker_id) final {ffi::Any k; return k;}
   
 
-  void DebugSetRegister(int64_t reg_id, AnyView value, int worker_id) final {
-
-  }
+  void DebugSetRegister(int64_t reg_id, AnyView value, int worker_id) final { }
 
   void BroadcastPacked(const ffi::PackedArgs& args) override {
 
@@ -78,8 +73,16 @@ int64_t GetNumWorkers() final { return num_workers; }
       // 用 MPI_Send
   }
 
+  /*!
+   * \brief Receive a packed sequence from a worker. This function is usually called by the
+   * controler to communicate with worker-0, because the worker-0 is assumed to be always
+   collocated
+   * with the controler. Receiving from other workers may not be supported.
+   * \return The packed sequence received.
+   */
+
   ffi::PackedArgs RecvReplyPacked(int worker_id) override {
-      // 用 MPI_Recv
+
       ffi::PackedArgs args = this->RecvReplyPacked(worker_id);
       return args;
   }
@@ -106,14 +109,20 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       .def("runtime.disco.MPISession", MPISession)
       .def("runtime.disco.mpi_session_init_workers",
            [](int num_workers, int local_rank, int num_groups, int num_workers_per_node, int world_rank) {
-             LOG(INFO) << "Initializing local worker  : " << local_rank << " & it's world worker id : " << world_rank
-                       << " with " << num_groups << " groups.";
-  
              DiscoWorker* worker = DiscoWorker::ThreadLocal();
              worker->local_worker_id = local_rank;
+             if(worker->local_worker_id == 0) { 
+               LOG(INFO) << "Number of processes on this node: " << num_workers_per_node 
+                         << ". Initializing worker group with " << num_workers << " mpi processes.";
+               worker->workers_per_node.push_back(num_workers_per_node); 
+             }
+
+             LOG(INFO) << "Initializing local worker  : " << local_rank << " & it's world worker id : " << world_rank
+                       << " with " << num_groups << " groups.";    
              worker->num_groups = num_groups;
              worker->worker_id = world_rank;
              worker->num_workers = num_workers;
+
            });
 }
 

@@ -8,7 +8,7 @@ from tvm.runtime import disco
 
 
 
-devices = [0,1]
+devices = [0,1,2,3]
 
 
 sess = disco.MPISession()
