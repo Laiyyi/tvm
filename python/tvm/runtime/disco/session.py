@@ -323,7 +323,7 @@ class Session(Object):
         *device_ids : int
             The device IDs to be used by the underlying communication library.
         """
-        assert ccl in ("nccl", "rccl", "mpi"), f"Unsupported CCL backend: {ccl}"
+        assert ccl in ("nccl", "rccl", "mpi", "cpu"), f"Unsupported CCL backend: {ccl}"
         _ffi_api.SessionInitCCL(self, ccl, ShapeTuple(device_ids))  # type: ignore # pylint: disable=no-member
         self._clear_ipc_memory_pool()
 
@@ -532,12 +532,13 @@ class Session(Object):
 class ThreadedSession(Session):
     """A Disco session backed by multi-threading."""
 
-    def __init__(self, num_workers: int, num_groups: int = 1) -> None:
+    def __init__(self, num_workers: int, num_groups: int = 1, build_ring: bool = False,) -> None:
         """Create a disco session backed by multiple threads in the same process."""
         self.__init_handle_by_constructor__(
             _ffi_api.SessionThreaded,  # type: ignore # pylint: disable=no-member
             num_workers,
             num_groups,
+            build_ring,
         )
 
 
@@ -550,6 +551,7 @@ class ProcessSession(Session):
         num_workers: int,
         num_groups: int = 1,
         entrypoint: str = "tvm.exec.disco_worker",
+        build_ring: bool = False,
     ) -> None:
         self.__init_handle_by_constructor__(
             _ffi_api.SessionProcess,  # type: ignore # pylint: disable=no-member
@@ -557,6 +559,7 @@ class ProcessSession(Session):
             num_groups,
             "runtime.disco.create_process_pool",
             entrypoint,
+            build_ring,
         )        
         self._configure_structlog()
 
@@ -580,14 +583,14 @@ class ProcessSession(Session):
 
         config = pickle.dumps(full_config)
         func = self.get_global_func("runtime.disco._configure_structlog")
-        func(config, os.getpid())
-        
-
+        func(config, os.getpid())    
 
 @register_global_func("runtime.disco.create_socket_session_local_workers")
-def _create_socket_session_local_workers(num_workers) -> Session:
+def _create_socket_session_local_workers(num_workers, build_ring) -> Session:
     """Create the local session for each distributed node over socket session."""
-    return ProcessSession(num_workers)
+    return ProcessSession(num_workers, build_ring=build_ring)
+
+
 
 
 @register_object("runtime.disco.SocketSession")
@@ -601,6 +604,7 @@ class SocketSession(Session):
         num_groups: int,
         host: str,
         port: int,
+        build_ring: bool = False,
     ) -> None:
         self.__init_handle_by_constructor__(
             _ffi_api.SocketSession,  # type: ignore # pylint: disable=no-member
@@ -609,15 +613,9 @@ class SocketSession(Session):
             num_groups,
             host,
             port,
+            build_ring,
         )
 
-@register_object("runtime.disco.MPISession")
-class MPISession(Session):
-    """A Disco session for MPI"""
-    def __init__(self,) -> None:
-        self.__init_handle_by_constructor__(
-            _ffi_api.MPISession,  # type: ignore # pylint: disable=no-member
-        )
 
 
 @register_global_func("runtime.disco._configure_structlog")
