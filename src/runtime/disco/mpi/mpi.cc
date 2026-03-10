@@ -97,178 +97,150 @@ void InitCCLPerWorker(ffi::Shape device_ids) {
   ctx->worker = worker;
   ctx->device_id = device_id;
   
-  std::ofstream fout("debug_log.txt", std::ios::out);
-    if (!fout.is_open()) {
-        std::cerr << "Failed to open debug_log.txt" << std::endl;
+  // std::ofstream fout("debug_log.txt", std::ios::out);
+  //   if (!fout.is_open()) {
+  //       std::cerr << "Failed to open debug_log.txt" << std::endl;
    
-    }
+  //   }
 
-    // 寫入檔案
-    fout << "group size = " << group_size << std::endl;
-    fout << "worker->num_workers = " << worker->num_workers << std::endl;
-    fout << "worker->num_groups = " << worker->num_groups << std::endl;
-    fout << "device id = " << device_id << std::endl;
-    fout << "worker->local_worker_id = " << worker->local_worker_id << std::endl;
-    fout << "worker->ccl = " << worker->ccl << std::endl;
-    fout << "ctx->worker = " << ctx->worker << std::endl;
-    fout << "ctx->device_id = " << ctx->device_id << std::endl;
-    fout << "ctx->worker->worker_id = " << ctx->worker->worker_id << std::endl;
+  //   // 寫入檔案
+  //   fout << "group size = " << group_size << std::endl;
+  //   fout << "worker->num_workers = " << worker->num_workers << std::endl;
+  //   fout << "worker->num_groups = " << worker->num_groups << std::endl;
+  //   fout << "device id = " << device_id << std::endl;
+  //   fout << "worker->local_worker_id = " << worker->local_worker_id << std::endl;
+  //   fout << "worker->ccl = " << worker->ccl << std::endl;
+  //   fout << "ctx->worker = " << ctx->worker << std::endl;
+  //   fout << "ctx->device_id = " << ctx->device_id << std::endl;
+  //   fout << "ctx->worker->worker_id = " << ctx->worker->worker_id << std::endl;
 
-    fout.close(); // 關檔
+  //   fout.close(); // 關檔
    
 
 }
 
-// void AllReduce(Tensor send, ReduceKind reduce_kind, bool in_group, Tensor recv) {
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   ffi::Shape shape = send.Shape();
-//   int64_t numel = shape->Product();
+void AllReduce(Tensor send, ReduceKind reduce_kind, bool in_group, Tensor recv) {
+  CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+  ffi::Shape shape = send.Shape();
+  int32_t numel = static_cast<int32_t>(shape->Product());
 
-//   DataType dtype = DataType(send->dtype);
-//   int64_t offset = 0;
-//   int batch = INT_MAX;
+  DataType dtype = DataType(send->dtype);
+  if (dtype == DataType::Float8E4M3FN() || dtype == DataType::Float8E5M2() || dtype == DataType::BFloat(16) ||
+      dtype == DataType::UInt(8) || dtype == DataType::Float(16)) {
+    LOG(FATAL) << "Unsupported data type for allreduce: MPI does not support this dtype.";
+  }
 
-//   while (offset < numel) {
-//     int this_count = (int)std::min((int64_t)batch, numel - offset);
+  MPI_CALL(MPI_Allreduce(send->data, recv->data, numel,
+                  /*datatype=*/AsMPIDataType(dtype),
+                  /*op=*/AsMPIRedOp(reduce_kind),
+                  MPI_COMM_WORLD));
+ 
 
-//     MPI_CALL(MPI_Allreduce(send->data + offset,
-//                   recv->data + offset,
-//                   this_count,
-//                   /*datatype=*/AsMPIDataType(dtype),
-//                   /*op=*/AsMPIRedOp(reduce_kind),
-//                   MPI_COMM_WORLD));
-//     offset += this_count;
-//   }
+}
 
-// }
+void AllGather(Tensor send, bool in_group, Tensor recv) {
+  CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+  ffi::Shape shape = send.Shape();
+  int32_t numel = static_cast<int32_t>(shape->Product());
 
-// void AllGather(Tensor send, bool in_group, Tensor recv) {
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   ffi::Shape shape = send.Shape();
-//   int64_t numel = shape->Product();
+  DataType dtype = DataType(send->dtype);
+  if (dtype == DataType::Float8E4M3FN() || dtype == DataType::Float8E5M2() || dtype == DataType::BFloat(16) ||
+      dtype == DataType::UInt(8) || dtype == DataType::Float(16)) {
+    LOG(FATAL) << "Unsupported data type for allgather: MPI does not support this dtype.";
+  }
 
-//   DataType dtype = DataType(send->dtype);
-//   int64_t offset = 0;
+    MPI_CALL(MPI_Allgather(
+        send->data, numel,
+        /*datatype=*/AsMPIDataType(dtype),
+        recv->data, numel,
+        /*datatype=*/AsMPIDataType(dtype),
+        MPI_COMM_WORLD
+     ));
 
-//   while (offset < numel) {
-//     int chunk = std::min((int64_t)INT_MAX, numel - offset);
-
-//     MPI_CALL(MPI_Allgather(
-//         send->data + offset,
-//         chunk,
-//         /*datatype=*/AsMPIDataType(dtype),
-//         recv->data + offset * ctx->worker->num_workers,
-//         chunk,
-//         /*datatype=*/AsMPIDataType(dtype),
-//         MPI_COMM_WORLD
-//      ));
-
-//     offset += chunk;
-//    }
 
  
-// }
+}
 
-// void BroadcastFromWorker0(ffi::Optional<Tensor> send, bool in_group, Tensor recv) {
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   int worker_id = ctx->worker->worker_id;
-//   int group_size = ctx->worker->num_workers;
-//   bool is_sender = (worker_id == 0 && !in_group) || (in_group && worker_id % group_size == 0);
-//   int64_t numel = recv.Shape().Product();
- 
-//   int64_t offset = 0;
-//   DataType dtype = DataType(recv->dtype);
-//   int type_size;
-//   MPI_Type_size(AsMPIDataType(dtype), &type_size);
+void BroadcastFromWorker0(ffi::Optional<Tensor> send, bool in_group, Tensor recv) {
+  CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
 
-//    // Root 先把資料 copy 到 recv buffer
-//   if (is_sender) {
-//     CHECK(send.defined());
-//     CHECK(send.value().Shape().Product() == numel);
-
-//     std::memcpy(recv->data,
-//                 send.value()->data,
-//                 numel * type_size);
-//   }
+  int worker_id = ctx->worker->worker_id;
+  int group_size = ctx->worker->num_workers;
+  bool is_sender = (worker_id == 0 && !in_group) || (in_group && worker_id % group_size == 0);
   
+  int32_t numel = static_cast<int32_t>(recv.Shape().Product());
 
-//   while (offset < numel) {
-//     int chunk = static_cast<int>(std::min<int64_t>(INT_MAX, numel - offset));
+  DataType dtype = DataType(recv->dtype);
+  int size;
+  MPI_Type_size(AsMPIDataType(dtype), &size);
 
-//     void* chunk_ptr = static_cast<char*>(recv->data) + offset * type_size;
+  if (is_sender) {
+    CHECK(send.defined());
+    CHECK(send.value().Shape().Product() == numel);
+    std::memcpy(recv->data,
+                send.value()->data,
+                numel * size);
+  } 
 
-//     MPI_CALL(MPI_Bcast(chunk_ptr, chunk, AsMPIDataType(dtype),/*root=*/0, MPI_COMM_WORLD));
+  void* chunk_ptr = static_cast<char*>(recv->data);
 
-//     offset += chunk;
-//   }
-// }
+  MPI_CALL(MPI_Bcast(chunk_ptr, numel, AsMPIDataType(dtype),/*root=*/0, MPI_COMM_WORLD));
 
-// void ScatterFromWorker0(ffi::Optional<Tensor> send, bool in_group, Tensor recv) {
-//   CHECK(recv.defined()) << "ValueError: buffer `recv` must not be None";
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   int worker_id = ctx->worker->worker_id;
-//   int num_workers = ctx->worker->num_workers;
-//   int group_size = ctx->worker->num_workers;
-//   bool is_sender = (worker_id == 0 && !in_group) || (in_group && worker_id % group_size == 0);
-//   int num_receiver = in_group ? group_size : num_workers;
+
+  
+}
+
+void ScatterFromWorker0(ffi::Optional<Tensor> send, bool in_group, Tensor recv) {
+  CHECK(recv.defined()) << "ValueError: buffer `recv` must not be None";
+  CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+  int worker_id = ctx->worker->worker_id;
+  int num_workers = ctx->worker->num_workers;
+  int group_size = ctx->worker->num_workers;
+  bool is_sender = (worker_id == 0 && !in_group) || (in_group && worker_id % group_size == 0);
+  int num_receiver = in_group ? group_size : num_workers;
  
-//   bool is_sender =  (worker_id == 0 && !in_group) || (in_group && worker_id % group_size == 0);
 
-//   int type_size;
-//   MPI_Type_size(AsMPIDataType(DataType(recv->dtype)), &type_size);
+  int type_size;
+  MPI_Type_size(AsMPIDataType(DataType(recv->dtype)), &type_size);
 
-//   int64_t numel_per_shard = recv.Shape().Product();
+  int32_t numel_per_shard = static_cast<int32_t>(recv.Shape().Product());
 
-//   // ---------- Root 檢查 ----------
-//   if (is_sender) {
-//     CHECK(send.defined())
-//         << "ValueError: send must be provided when root.";
+  // ---------- Root 檢查 ----------
+  if (is_sender) {
+    CHECK(send.defined())
+        << "ValueError: send must be provided when root.";
 
-//     Tensor buffer = send.value();
-//     int64_t total_numel = buffer.Shape().Product();
+    Tensor buffer = send.value();
+    int32_t total_numel = static_cast<int32_t>(buffer.Shape().Product());
 
-//     CHECK_EQ(total_numel % num_receiver, 0)
-//         << "Scatter requires total elements divisible by number of receivers.";
+    CHECK_EQ(total_numel % num_receiver, 0)
+        << "Scatter requires total elements divisible by number of receivers.";
 
-//     CHECK_EQ(total_numel / num_receiver,
-//              numel_per_shard)
-//         << "recv size mismatch.";
-//   }
+    CHECK_EQ(total_numel / num_receiver,
+             numel_per_shard)
+        << "recv size mismatch.";
+  }
 
-//   // ---------- int64 安全 scatter ----------
-//   int64_t offset = 0;
+  void* recv_chunk = static_cast<char*>(recv->data);
+  const void* send_chunk = nullptr;
 
-//   while (offset < numel_per_shard) {
+    if (is_sender) {
+      send_chunk =
+          static_cast<char*>(send.value()->data) +
+          (ctx->worker->worker_id * numel_per_shard) * type_size;
+    }
 
-//     int chunk = static_cast<int>(
-//         std::min<int64_t>(INT_MAX,
-//                           numel_per_shard - offset));
+    MPI_CALL(MPI_Scatter(
+        send_chunk,        // root only meaningful
+        numel_per_shard,             // sendcount per rank
+        AsMPIDataType(DataType(recv->dtype)),
+        recv_chunk,
+        numel_per_shard,
+        AsMPIDataType(DataType(recv->dtype)),
+        /*root=*/0,
+        MPI_COMM_WORLD));
 
-//     void* recv_chunk =
-//         static_cast<char*>(recv->data) +
-//         offset * type_size;
-
-//     const void* send_chunk = nullptr;
-
-//     if (is_sender) {
-//       send_chunk =
-//           static_cast<char*>(send.value()->data) +
-//           (ctx->worker->worker_id * numel_per_shard + offset) * type_size;
-//     }
-
-//     MPI_CALL(MPI_Scatter(
-//         send_chunk,        // root only meaningful
-//         chunk,             // sendcount per rank
-//         AsMPIDataType(DataType(recv->dtype)),
-//         recv_chunk,
-//         chunk,
-//         AsMPIDataType(DataType(recv->dtype)),
-//         /*root=*/0,
-//         MPI_COMM_WORLD));
-
-//     offset += chunk;
-//   }
-// }
+}
 
 // void GatherToWorker0(Tensor send, bool in_group, ffi::Optional<Tensor> recv) {
 //   CHECK(send.defined()) << "ValueError: buffer `send` must not be None";
@@ -517,56 +489,57 @@ void InitCCLPerWorker(ffi::Shape device_ids) {
   
 // }
 
-// void SyncWorker() {
-//   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//   ICHECK(ctx->worker != nullptr);
-//   MPI_CALL(MPI_Barrier(MPI_COMM_WORLD));
-// }
+void SyncWorker() {
+  CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+  ICHECK(ctx->worker != nullptr);
+  MPI_CALL(MPI_Barrier(MPI_COMM_WORLD));
+}
 
    TVM_FFI_STATIC_INIT_BLOCK() {
    namespace refl = tvm::ffi::reflection;
    refl::GlobalDef()
        .def("runtime.disco." TVM_DISCO_CCL_NAME ".init_ccl", InitCCL)
-       .def("runtime.disco." TVM_DISCO_CCL_NAME ".init_ccl_per_worker", InitCCLPerWorker);
-//       .def("runtime.disco." TVM_DISCO_CCL_NAME ".allreduce",
-//            [](Tensor send, int kind, bool in_group, Tensor recv) {
-//              CHECK(0 <= kind && kind <= 4) << "ValueError: Unknown ReduceKind: " << kind;
-//              nccl::AllReduce(send, static_cast<ReduceKind>(kind), in_group, recv);
-//            })
-//       .def("runtime.disco." TVM_DISCO_CCL_NAME ".allgather",
-//            [](Tensor send, bool in_group, Tensor recv) { nccl::AllGather(send, in_group, recv); })
-//       .def("runtime.disco." TVM_DISCO_CCL_NAME ".broadcast_from_worker0", BroadcastFromWorker0)
-//       .def("runtime.disco." TVM_DISCO_CCL_NAME ".scatter_from_worker0", ScatterFromWorker0)
-//       .def("runtime.disco." TVM_DISCO_CCL_NAME ".gather_to_worker0", GatherToWorker0)
-//       .def("runtime.disco." TVM_DISCO_CCL_NAME ".recv_from_worker0", RecvFromWorker0)
-//       .def("runtime.disco." TVM_DISCO_CCL_NAME ".send_to_next_group", SendToNextGroup)
-//       .def("runtime.disco." TVM_DISCO_CCL_NAME ".recv_from_prev_group", RecvFromPrevGroup)
-//       .def("runtime.disco." TVM_DISCO_CCL_NAME ".send_to_worker", SendToWorker)
-//       .def("runtime.disco." TVM_DISCO_CCL_NAME ".recv_from_worker", RecvFromWorker)
-//       .def("runtime.disco." TVM_DISCO_CCL_NAME ".sync_worker", SyncWorker)
-//       .def("runtime.disco." TVM_DISCO_CCL_NAME ".test_send_to_next_group_recv_from_prev_group",
-//            [](Tensor buffer) {
-//              CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//              CHECK_EQ(ctx->worker->num_workers, 4) << "The test requires the world size to be 4.";
-//              CHECK_EQ(ctx->worker->num_groups, 2) << "The test requires the group size to be 2.";
-//              int group_size = ctx->worker->num_workers / ctx->worker->num_groups;
-//              int group_id = ctx->worker->worker_id / group_size;
-//              if (group_id == 0) {
-//                tvm::runtime::nccl::SendToNextGroup(buffer);
-//              } else {
-//                tvm::runtime::nccl::RecvFromPrevGroup(buffer);
-//              }
-//            })
-//       .def("runtime.disco." TVM_DISCO_CCL_NAME ".test_worker2_sends_to_worker0", [](Tensor buffer) {
-//         CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
-//         CHECK_EQ(ctx->worker->num_workers, 4) << "The test requires the world size to be 4.";
-//         CHECK_EQ(ctx->worker->num_groups, 2) << "The test requires the group size to be 2.";
-//         if (ctx->worker->worker_id == 2) {
-//           tvm::runtime::nccl::SendToWorker(buffer, 0);
-//         } else if (ctx->worker->worker_id == 0) {
-//           tvm::runtime::nccl::RecvFromWorker(buffer, 2);
-//         }
-//       });
+       .def("runtime.disco." TVM_DISCO_CCL_NAME ".init_ccl_per_worker", InitCCLPerWorker)
+      // .def("runtime.disco." TVM_DISCO_CCL_NAME ".allreduce",
+      //      [](Tensor send, int kind, bool in_group, Tensor recv) {
+      //        CHECK(0 <= kind && kind <= 4) << "ValueError: Unknown ReduceKind: " << kind;
+      //        nccl::AllReduce(send, static_cast<ReduceKind>(kind), in_group, recv);
+      //      })
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".allgather",
+           [](Tensor send, bool in_group, Tensor recv) { mpi::AllGather(send, in_group, recv); })
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".broadcast_from_worker0", BroadcastFromWorker0)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".scatter_from_worker0", ScatterFromWorker0)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".gather_to_worker0", GatherToWorker0)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".recv_from_worker0", RecvFromWorker0)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".send_to_next_group", SendToNextGroup)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".recv_from_prev_group", RecvFromPrevGroup)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".send_to_worker", SendToWorker)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".recv_from_worker", RecvFromWorker)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".sync_worker", SyncWorker);
+      // .def("runtime.disco." TVM_DISCO_CCL_NAME ".test_send_to_next_group_recv_from_prev_group",
+      //      [](Tensor buffer) {
+      //        CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+      //        CHECK_EQ(ctx->worker->num_workers, 4) << "The test requires the world size to be 4.";
+      //        CHECK_EQ(ctx->worker->num_groups, 2) << "The test requires the group size to be 2.";
+      //        int group_size = ctx->worker->num_workers / ctx->worker->num_groups;
+      //        int group_id = ctx->worker->worker_id / group_size;
+      //        if (group_id == 0) {
+      //          tvm::runtime::mpi::SendToNextGroup(buffer);
+      //        } else {
+      //          tvm::runtime::mpi::RecvFromPrevGroup(buffer);
+      //        }
+      //      })
+      // .def("runtime.disco." TVM_DISCO_CCL_NAME ".test_worker2_sends_to_worker0", [](Tensor buffer) {
+      //   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
+      //   CHECK_EQ(ctx->worker->num_workers, 4) << "The test requires the world size to be 4.";
+      //   CHECK_EQ(ctx->worker->num_groups, 2) << "The test requires the group size to be 2.";
+      //   if (ctx->worker->worker_id == 2) {
+      //     tvm::runtime::mpi::SendToWorker(buffer, 0);
+      //   } else if (ctx->worker->worker_id == 0) {
+      //     tvm::runtime::mpi::RecvFromWorker(buffer, 2);
+      //   }
+      // });
+
  }
 
 }  // namespace mpi
