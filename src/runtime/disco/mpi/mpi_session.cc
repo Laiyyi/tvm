@@ -88,8 +88,9 @@ class MPISessionObj : public BcastSessionObj {
    ICHECK(f_create_local_session.has_value())
         << "Cannot find function runtime.disco.create_socket_session_local_workers";
    local_session_ = ((*f_create_local_session)(1)).cast<BcastSession>();
+   
 
-   MPI_CALL(MPI_Init(nullptr, nullptr));
+  //  MPI_CALL(MPI_Init(nullptr, nullptr));
    MPI_CALL(MPI_Comm_size(MPI_COMM_WORLD, &num_workers));
    MPI_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &world_rank));
 
@@ -101,31 +102,31 @@ class MPISessionObj : public BcastSessionObj {
    DRef f_init_workers =
         local_session_->GetGlobalFunc("runtime.disco.mpi_session_init_workers");
    local_session_->CallPacked(f_init_workers, num_workers, local_rank, 1 /*num_groups = 1*/, world_rank);
-    
-
-   
    
    // only root need to create channel
    if ( world_rank == 0 ) {
-      int remotes_workers = num_workers - num_workers_per_node;
-      int remote_rank = num_workers_per_node;
-     
+      // int remotes_workers = num_workers - num_workers_per_node;
+      // int remote_rank = num_workers_per_node;
+      int remotes_workers = num_workers -1;
+      int remote_rank = 1;
       for (int i = 0; i < remotes_workers; i++) {
          MPIRankStream stream(remote_rank);
          remote_stream.push_back(stream);
          remote_channels.emplace_back(std::make_unique<DiscoMPIChannel>(remote_stream.back()));
          remote_rank++;
       }
-   } else if ( world_rank >= num_workers_per_node ) {
-        local_channel = std::make_unique<DiscoMPIChannel>(localStream);
-   }
-   
-   if ( world_rank != 0) { this->MainLoop(); }  
-   
+   } else {
+      local_channel = std::make_unique<DiscoMPIChannel>(localStream);
+   } 
 
+  //  else if ( world_rank >= num_workers_per_node ) {
+  //       local_channel = std::make_unique<DiscoMPIChannel>(localStream);
+  //  }
+   
+  //  if ( world_rank != 0) { this->MainLoop(); }  
   }
 
-  ~MPISessionObj() { MPI_CALL(MPI_Finalize());}
+  ~MPISessionObj() { /*MPI_CALL(MPI_Finalize());*/ }
 
   int64_t GetNumWorkers() final { return num_workers; }
 
@@ -149,7 +150,7 @@ class MPISessionObj : public BcastSessionObj {
   
 
   void DebugSetRegister(int64_t reg_id, AnyView value, int worker_id) final { 
-       int node_id = worker_id / num_workers_per_node;
+    int node_id = worker_id / num_workers_per_node;
     if (node_id == 0) {
       local_session_->DebugSetRegister(reg_id, value, worker_id);
     } else {
@@ -241,6 +242,17 @@ class MPISessionObj : public BcastSessionObj {
     }
   }
 
+  // void Shutdown() final {
+  //   // local session will be implicitly shutdown by its destructor
+  //   std::vector<AnyView> packed_args(2);
+  //   ffi::PackedArgs::Fill(packed_args.data(), static_cast<int>(DiscoMPIAction::kShutdown), -1);
+  //   for (auto& channel : remote_channels) {
+  //     channel->Send(ffi::PackedArgs(packed_args.data(), packed_args.size()));
+  //   }
+  //   remote_channels.clear();
+  //   MPI_CALL(MPI_Finalize());
+  // }
+
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("runtime.disco.MPISession", MPISessionObj,BcastSessionObj);
   
   int num_workers_per_node;
@@ -277,7 +289,6 @@ TVM_FFI_STATIC_INIT_BLOCK() {
              worker->num_groups = num_groups;
              worker->worker_id = world_rank;
              worker->num_workers = num_workers;
-
            });
 }
 

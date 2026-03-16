@@ -70,6 +70,6 @@ afterlowerdistir = tvm.relax.transform.LegalizeOps()(afterlowerdistir)
 afterlowerdistir.show()
 
 after = relax.get_pipeline("zero")(afterlowerdistir)
-path = os.path.join(os.path.dirname(__file__), "testmodel.so")
+path = os.path.join(os.path.dirname(__file__), "TestDistIRCPU.so")
 ex = tvm.compile(after, target="llvm").export_library(path)
 

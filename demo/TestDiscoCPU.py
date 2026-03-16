@@ -28,24 +28,24 @@ from tvm.runtime import disco
 
 
 
-devices = [0]
+# devices = [0]
 #disco.ThreadedSession, diso.ProcessSession, diso.SocketSession
 #要改成 SocketSession 才能用 mpi
-sess = disco.ProcessSession(num_workers=len(devices))
-sess.init_ccl("mpi", *devices)
+# sess = disco.ProcessSession(num_workers=len(devices))
+# sess.init_ccl("mpi", *devices)
 
 
 
 
 
 
-# import os
-# path = os.path.join(os.path.dirname(__file__), "test.so")
+import os
+path = os.path.join(os.path.dirname(__file__), "testCPU.so")
 
-# dev = tvm.cpu()
+dev = tvm.cpu()
 
 # # model inference 可以在這裡編譯，跟TestSimpleModel不一樣的是主要編譯改在這邊呼叫然後沒有export_library
-# ex = tvm.compile(mod, target="llvm").export_library(path)
+ex = tvm.compile(mod, target="llvm").export_library(path)
     
 
 # mod = sess.load_vm_module(path)

@@ -79,7 +79,8 @@ void InitCCLPerWorker(ffi::Shape device_ids) {
   // Step up local context of OpenMPI
   // Assuming that the number of workers per node is uniform
   int group_size = worker->num_workers;
-  int num_workers_per_node = group_size / device_ids.size();
+  // int num_workers_per_node = group_size / device_ids.size();
+  int num_workers_per_node = group_size / 2;
   int index = worker->worker_id / num_workers_per_node;
   int device_id = device_ids[index];
 
@@ -155,18 +156,15 @@ void AllGather(Tensor send, bool in_group, Tensor recv) {
         recv->data, numel,
         /*datatype=*/AsMPIDataType(dtype),
         MPI_COMM_WORLD
-     ));
-
-
- 
+     )); 
 }
 
+// in group should be removed.
 void BroadcastFromWorker0(ffi::Optional<Tensor> send, bool in_group, Tensor recv) {
   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
 
   int worker_id = ctx->worker->worker_id;
-  int group_size = ctx->worker->num_workers;
-  bool is_sender = (worker_id == 0 && !in_group) || (in_group && worker_id % group_size == 0);
+  bool is_sender = (worker_id == 0);
   
   int32_t numel = static_cast<int32_t>(recv.Shape().Product());
 
@@ -181,23 +179,18 @@ void BroadcastFromWorker0(ffi::Optional<Tensor> send, bool in_group, Tensor recv
                 send.value()->data,
                 numel * size);
   } 
-
+  printf("Who call me？ %d\n",ctx->worker->worker_id);
   void* chunk_ptr = static_cast<char*>(recv->data);
 
   MPI_CALL(MPI_Bcast(chunk_ptr, numel, AsMPIDataType(dtype),/*root=*/0, MPI_COMM_WORLD));
-
-
-  
 }
 
 void ScatterFromWorker0(ffi::Optional<Tensor> send, bool in_group, Tensor recv) {
   CHECK(recv.defined()) << "ValueError: buffer `recv` must not be None";
   CCLThreadLocalContext* ctx = CCLThreadLocalContext::Get();
   int worker_id = ctx->worker->worker_id;
-  int num_workers = ctx->worker->num_workers;
-  int group_size = ctx->worker->num_workers;
-  bool is_sender = (worker_id == 0 && !in_group) || (in_group && worker_id % group_size == 0);
-  int num_receiver = in_group ? group_size : num_workers;
+   bool is_sender = (worker_id == 0 );
+  int num_receiver = ctx->worker->num_workers;
  
 
   int type_size;
