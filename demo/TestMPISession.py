@@ -10,7 +10,7 @@
 import numpy as np
 import os
 # mpiexec --host node1,node2,node3,node4 -n 4 /home/buntu/tvm-env/bin/python3 TestMPI4pyCCL.py
-from mpi4py import MPI
+# from mpi4py import MPI
 import tvm
 from tvm import relax
 
@@ -136,15 +136,15 @@ path = os.path.join(os.path.dirname(__file__), "testCPU.so")
 from tvm.runtime import disco
 
 devices = [0,1]
-sess = disco.MPISession()
+n_proc = 4
 
-sess.init_ccl("mpi", *devices)
+sess = disco.MPISession(n_proc)
+# sess.shutdown()
+# sess.init_ccl("mpi", *devices)
 
-# mod = sess.load_vm_module(path)
+# # mod = sess.load_vm_module(path)
 
-comm = MPI.COMM_WORLD
-rank = comm.Get_rank()
-size = comm.Get_size()
+
 
 # # 只有 rank 0 生成原始資料
 # # if rank == 0: 
@@ -156,8 +156,8 @@ size = comm.Get_size()
 # #     fc1weight_np = None
 # #     fc1bias_np = None
 
-data_np = np.diag([1.0, 1.0]).astype("float32")
-data = sess.broadcast(data_np)
+# data_np = np.diag([1.0, 1.0]).astype("float32")
+# data = sess.scatter(data_np)
 
 
 
