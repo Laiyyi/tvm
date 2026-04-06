@@ -136,7 +136,7 @@ path = os.path.join(os.path.dirname(__file__), "testCPU.so")
 from tvm.runtime import disco
 
 devices = [0,1]
-n_proc = 4
+n_proc = 2
 
 sess = disco.MPISession(n_proc)
 # sess.shutdown()

@@ -581,13 +581,36 @@ class ProcessSession(Session):
         config = pickle.dumps(full_config)
         func = self.get_global_func("runtime.disco._configure_structlog")
         func(config, os.getpid())
-        
 
+@register_object("runtime.disco.ProcessSession")
+class MPISession(ProcessSession):
+    """A Disco session that uses MPI for multi-process communication and execution."""
+
+    def __init__(
+        self,
+        num_workers: int,
+        num_groups: int = 1,
+        entrypoint: str = "tvm.exec.disco_worker",
+    ) -> None:
+        self.__init_handle_by_constructor__(
+            _ffi_api.SessionProcess,  # type: ignore # pylint: disable=no-member
+            num_workers,
+            num_groups,
+            "runtime.disco.create_process_pool",
+            entrypoint,
+        )        
+        self._configure_structlog()
 
 @register_global_func("runtime.disco.create_socket_session_local_workers")
 def _create_socket_session_local_workers(num_workers) -> Session:
     """Create the local session for each distributed node over socket session."""
     return ProcessSession(num_workers)
+
+
+@register_global_func("runtime.disco.create_mpi_session_local_workers")
+def _create_mpi_session_local_workers(num_workers) -> Session:
+    """Create the local session for each distributed node over socket session."""
+    return MPISession(num_workers)
 
 
 @register_object("runtime.disco.SocketSession")

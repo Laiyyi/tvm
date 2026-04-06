@@ -88,90 +88,83 @@ class MPISessionObj : public BcastSessionObj {
   : num_workers_(num_workers) {
 
   MPI_CALL(MPI_Init(nullptr, nullptr));
-  MPI_Comm parent;
-  MPI_Comm_get_parent(&parent);
-  //  MPI_CALL(MPI_Comm_size(MPI_COMM_WORLD, &num_workers));
-  //  MPI_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &world_rank));
+  const auto f_create_local_session =
+        tvm::ffi::Function::GetGlobal("runtime.disco.create_mpi_session_local_workers");
+  ICHECK(f_create_local_session.has_value())
+        << "Cannot find function runtime.disco.create_mpi_session_local_workers";
+  local_session_ = ((*f_create_local_session)(num_workers)).cast<BcastSession>();
 
-  //  MPI_Comm local_comm;
-  //  MPI_CALL(MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &local_comm));
-  //  MPI_CALL(MPI_Comm_rank(local_comm, &local_rank));
-  //  MPI_CALL(MPI_Comm_size(local_comm, &num_workers_per_node));
-  //  MPI_CALL(MPI_Comm_free(&local_comm));
- 
+  // MPI_Comm parent;
+  // MPI_Comm_get_parent(&parent);
 
-  if( parent == MPI_COMM_NULL ) {
+  // if( parent == MPI_COMM_NULL ) {
 
-    MPI_Comm intercomm;
-    const char* worker_command = "python3";
-    char* worker_argv[] = {(char*)ex_name.c_str(), nullptr};
+  
+  //   const char* worker_command = "python3";
+  //   char* worker_argv[] = {(char*)ex_name.c_str(), nullptr};
 
-    MPI_Comm_spawn(
-      worker_command, 
-      worker_argv, 
-      num_workers_,
-      MPI_INFO_NULL, 0, 
-      MPI_COMM_WORLD, 
-      &intercomm,
-      MPI_ERRCODES_IGNORE);
-      printf("[Master] spawned %d workers \n",num_workers_);
-  } else {
+  //   MPI_Comm_spawn(
+  //     worker_command, 
+  //     worker_argv, 
+  //     num_workers_,
+  //     MPI_INFO_NULL, 0, 
+  //     MPI_COMM_WORLD, 
+  //     &intercomm,
+  //     MPI_ERRCODES_IGNORE);
+      
+  //   MPI_Comm_rank(MPI_COMM_WORLD, &local_rank);
+  //   MPI_Barrier(intercomm);
+    
+  //   std::cout << "[Master] Creating disco worker 0" << std::endl;
+  //   worker_0_ = std::make_unique<DiscoWorkerThread>(0, num_workers, num_groups_, &worker_zero_data_);
+  //   std::cout << "[Master] Disco worker 0 work !" << std::endl;
 
-    MPI_Comm_rank(MPI_COMM_WORLD, &local_rank);
+  //   // local_session_ = this.cast<BcastSession>();
+  //   // DRef f_init_workers = local_session_->GetGlobalFunc("runtime.disco.mpi_session_init_workers");
+  //   // local_session_->CallPacked(f_init_workers, num_workers, local_rank, 1 /*num_groups = 1*/, world_rank);
 
-    int pipefd1[2]; // pipefd1[0] = main_read, pipefd1[1] = worker_write
-    int pipefd2[2]; // pipefd2[0] = worker_read, pipefd2[1] = main_write
-    pipe(pipefd1);
-    pipe(pipefd2);
-    std::string cmd = "python3 -m tvm.exec.disco_worker "
-                      + std::to_string(local_rank + 1) + " "
-                      + std::to_string(num_workers_) + " "
-                      + std::to_string(num_group_) + " "
-                      + std::to_string(pipefd2[0]) + " "
-                      + std::to_string(pipefd1[1]);
+  //   //  int other_workers = num_workers -1;
+  //   //  int rank = 1;
+  //   //  for (int i = 0; i < other_workers; i++) {
+  //   //       MPIRankStream stream(remote_rank);
+  //   //       stream_.push_back(stream);
+  //   //       channels.emplace_back(std::make_unique<DiscoMPIChannel>(stream_.back()));
+  //   //       rank++;
+  //   //   }
 
-    // 用 thread 執行 system(cmd)
-    std::thread worker_thread([cmd]() { system(cmd.c_str()); });
+    
+  // } else {
 
-    printf("[Worker] rank = %d w = %d\n",local_rank,num_workers_);
-    worker_thread.join();
-    close(pipefd1[0]); close(pipefd1[1]);
-    close(pipefd2[0]); close(pipefd2[1]);
+  //   MPI_Comm_rank(MPI_COMM_WORLD, &local_rank);
+
+  //   int pipefd1[2]; // pipefd1[0] = main_read, pipefd1[1] = worker_write
+  //   int pipefd2[2]; // pipefd2[0] = worker_read, pipefd2[1] = main_write
+  //   pipe(pipefd1);
+  //   pipe(pipefd2);
+  //   std::string cmd = "python3 -m tvm.exec.disco_worker "
+  //                     + std::to_string(local_rank + 1) + " "
+  //                     + std::to_string(num_workers_-1) + " "
+  //                     + std::to_string(num_groups_) + " "
+  //                     + std::to_string(pipefd2[0]) + " "
+  //                     + std::to_string(pipefd1[1]);
+
+
+  //   worker_thread = std::thread([cmd](){
+  //     system(cmd.c_str());
+  //   });
+  //   std::cout << "[Worker] MPI child process  " << local_rank << 
+  //                " start disco worker, id = " << (local_rank+1) << " start!" << std::endl;
+    
+  //   MPI_Barrier(parent);
+  //   to_master_channel = std::make_unique<DiscoMPIChannel>(to_master_stream);
+    
+    
+  //   worker_thread.join();
+  //   close(pipefd1[0]); close(pipefd1[1]);
+  //   close(pipefd2[0]); close(pipefd2[1]);
   }
 
 
-
-  
-
-  //  if (world_rank == 0 ) {
-  //    worker_thread = std::make_unique<DiscoWorkerThread>(
-  //     0, num_workers, 1 /*num_groups = 1*/, &worker_zero_data_);
-  //  } else {
-  //    worker_thread = std::make_unique<DiscoWorkerThread>(
-  //     world_rank, num_workers, 1 /*num_groups = 1*/, nullptr);
-  //  }
-  
-
-   
-  // //  DRef f_init_workers =
-  // //       local_session_->GetGlobalFunc("runtime.disco.mpi_session_init_workers");
-  // //  local_session_->CallPacked(f_init_workers, num_workers, local_rank, 1 /*num_groups = 1*/, world_rank);
-   
-  // //  // only root need to create channel
-  //  if ( world_rank == 0 ) {
-  //     // int remotes_workers = num_workers - num_workers_per_node;
-  //     // int remote_rank = num_workers_per_node;
-  //     int remotes_workers = num_workers -1;
-  //     int remote_rank = 1;
-  //     for (int i = 0; i < remotes_workers; i++) {
-  //        MPIRankStream stream(remote_rank);
-  //        remote_stream.push_back(stream);
-  //        remote_channels.emplace_back(std::make_unique<DiscoMPIChannel>(remote_stream.back()));
-  //        remote_rank++;
-  //     }
-  //  } else {
-  //     local_channel = std::make_unique<DiscoMPIChannel>(localStream);
-  //  } 
 
   //  if ( world_rank >= num_workers_per_node ) {
   //       local_channel = std::make_unique<DiscoMPIChannel>(localStream);
@@ -179,43 +172,61 @@ class MPISessionObj : public BcastSessionObj {
     //  if ( world_rank != 0) { this->MainLoop(); }  
   }
 
-  ~MPISessionObj() { printf("Try to kill\n"); Kill(); }
+  ~MPISessionObj() { Kill();    std::cout << "End" << std::endl;  }
 
   void Kill() {
-    // if (this->worker_thread != nullptr) {
-    //     this->Shutdown();
-    //     this->worker_thread.reset();
-    // }
-    MPI_CALL(MPI_Barrier(MPI_COMM_WORLD));
-    MPI_CALL(MPI_Finalize());
+   // 1. 取得 Parent 狀態
+    MPI_Comm parent_comm;
+    MPI_Comm_get_parent(&parent_comm);
+
+    if (parent_comm == MPI_COMM_NULL) {
+        // --- Master 邏輯 ---
+        if (worker_0_ != nullptr) {
+  
+            this->Shutdown(); // 通知本地 worker 0 結束
+            worker_0_.reset();
+            printf("p ok!\n");
+        }
+        // 這裡應該送出一個信號給 intercomm，通知所有子進程結束
+    } else {
+        // --- Child 邏輯 ---
+        // 確保 python worker 已經結束 (這裡要解決 system() 阻塞問題)
+        if (worker_thread.joinable()) {
+            worker_thread.join();
+        }
+    }
+
+    // 2. 移除 MPI_Barrier(MPI_COMM_WORLD)，直接 Finalize
+    // 如果一定要同步，請確保是對著正確的 communicator
+    MPI_Finalize();
   }
 
   int64_t GetNumWorkers() final { return num_workers_; }
 
   ffi::Any DebugGetFromRemote(int64_t reg_id, int worker_id) final {
-    int node_id = worker_id / num_workers_per_node;
-    if (node_id == 0) {
-      return local_session_->DebugGetFromRemote(reg_id, worker_id);
-    } else {
+    // int node_id = worker_id / num_workers_per_node;
+    // if (node_id == 0) {
+    //   return local_session_->DebugGetFromRemote(reg_id, worker_id);
+    // } else {
       AnyView packed_args[5];
       ffi::PackedArgs::Fill(packed_args, static_cast<int>(DiscoMPIAction::kSend), worker_id,
                             static_cast<int>(DiscoAction::kDebugGetFromRemote), reg_id, worker_id);
-      remote_channels[worker_id - num_workers_per_node]->Send(ffi::PackedArgs(packed_args, 5));
+      channels[worker_id + 1]->Send(ffi::PackedArgs(packed_args, 5));
       ffi::PackedArgs args = this->RecvReplyPacked(worker_id);
       ICHECK_EQ(args.size(), 2);
       ICHECK(static_cast<DiscoAction>(args[0].cast<int>()) == DiscoAction::kDebugGetFromRemote);
       ffi::Any result;
       result = args[1];
       return result;
-    }
+    // }
   }
   
 
   void DebugSetRegister(int64_t reg_id, AnyView value, int worker_id) final { 
-    int node_id = worker_id / num_workers_per_node;
-    if (node_id == 0) {
-      local_session_->DebugSetRegister(reg_id, value, worker_id);
-    } else {
+    // int node_id = worker_id / num_workers_per_node;
+    // if (node_id == 0) {
+    //   local_session_->DebugSetRegister(reg_id, value, worker_id);
+    // } else {
       ObjectRef wrapped{nullptr};
       if (auto opt_obj = value.as<ObjectRef>()) {
         wrapped = DiscoDebugObject::Wrap(value);
@@ -226,84 +237,84 @@ class MPISessionObj : public BcastSessionObj {
         ffi::PackedArgs::Fill(packed_args, static_cast<int>(DiscoMPIAction::kSend), worker_id,
                               static_cast<int>(DiscoAction::kDebugSetRegister), reg_id, worker_id,
                               value);
-        remote_channels[worker_id - num_workers_per_node]->Send(ffi::PackedArgs(packed_args, 6));
+        channels[worker_id + 1]->Send(ffi::PackedArgs(packed_args, 6));
       }
       ffi::Any result;
       ffi::PackedArgs args = this->RecvReplyPacked(worker_id);
       ICHECK_EQ(args.size(), 1);
       ICHECK(static_cast<DiscoAction>(args[0].cast<int>()) == DiscoAction::kDebugSetRegister);
-    }
+    // }
   }
 
   void BroadcastPacked(const ffi::PackedArgs& args) override {
-    printf("It mpi_session.and this is BroadcastPacked\n");
-    local_session_->BroadcastPacked(args);
-    // std::vector<AnyView> packed_args(args.size() + 2);
-    // ffi::PackedArgs::Fill(packed_args.data(), static_cast<int>(DiscoMPIAction::kSend), -1);
-    // std::copy(args.data(), args.data() + args.size(), packed_args.begin() + 2);
-    // for (auto& channel : remote_channels) {
-    //   channel->Send(ffi::PackedArgs(packed_args.data(), packed_args.size()));
-    // }
+    // local_session_->BroadcastPacked(args);
+    std::vector<AnyView> packed_args(args.size() + 2);
+    ffi::PackedArgs::Fill(packed_args.data(), static_cast<int>(DiscoMPIAction::kSend), -1);
+    std::copy(args.data(), args.data() + args.size(), packed_args.begin() + 2);
+    for (auto& channel : channels) {
+
+      channel->Send(ffi::PackedArgs(packed_args.data(), packed_args.size()));
+    }
   }
 
   void SendPacked(int worker_id,
                   const ffi::PackedArgs& args) override {
-    int node_id = worker_id / num_workers_per_node;
-    if (node_id == 0) {
-      local_session_->SendPacked(worker_id, args);
-      return;
-    }
+    // int node_id = worker_id / num_workers_per_node;
+    // if (node_id == 0) {
+    //   local_session_->SendPacked(worker_id, args);
+    //   return;
+    // }
     std::vector<AnyView> packed_args(args.size() + 2);
     ffi::PackedArgs::Fill(packed_args.data(), static_cast<int>(DiscoMPIAction::kSend),
                           worker_id);
     std::copy(args.data(), args.data() + args.size(), packed_args.begin() + 2);
-    remote_channels[worker_id - num_workers_per_node]->Send(ffi::PackedArgs(packed_args.data(), packed_args.size()));
+    channels[worker_id + 1]->Send(ffi::PackedArgs(packed_args.data(), packed_args.size()));
   }
 
 
 
   ffi::PackedArgs RecvReplyPacked(int worker_id) override {
-    int node_id = worker_id / num_workers_per_node;
-    if (node_id == 0) {
-      return local_session_->RecvReplyPacked(worker_id);
-    }
+    // int node_id = worker_id / num_workers_per_node;
+    // if (node_id == 0) {
+    //   return local_session_->RecvReplyPacked(worker_id);
+    // }
     AnyView packed_args[2];
     ffi::PackedArgs::Fill(packed_args, static_cast<int>(DiscoMPIAction::kReceive), worker_id);
-    remote_channels[worker_id - num_workers_per_node]->Send(ffi::PackedArgs(packed_args, 2));
-    return remote_channels[worker_id - num_workers_per_node]->Recv();
+    channels[worker_id + 1]->Send(ffi::PackedArgs(packed_args, 2));
+    return channels[worker_id + 1]->Recv();
 
   }
 
-   void MainLoop() {
-    while (true) {
-      ffi::PackedArgs args = local_channel->Recv();
-      DiscoMPIAction action = static_cast<DiscoMPIAction>(args[0].cast<int>());
-      int worker_id = args[1].cast<int>();
-      int local_worker_id = this->local_rank;
-      switch (action) {
-        case DiscoMPIAction::kSend: {
-          args = args.Slice(2);
-          if (worker_id == -1) {
-            local_session_->BroadcastPacked(args);
-          } else {
-            local_session_->SendPacked(local_worker_id, args);
-          }
-          break;
-        }
-        case DiscoMPIAction::kReceive: {
-          args = local_session_->RecvReplyPacked(local_worker_id);
-          local_channel->Reply(args);
-          break;
-        }
-        case DiscoMPIAction::kShutdown: {
-          local_session_->Shutdown();
-          return;
-        }
-        default:
-          LOG(FATAL) << "Invalid action " << static_cast<int>(action);
-      }
-    }
-  }
+  //  void MainLoop() {
+  //   while (true) {
+  //     ffi::PackedArgs args = to_master_channel->Recv();
+  //     DiscoMPIAction action = static_cast<DiscoMPIAction>(args[0].cast<int>());
+  //     int worker_id = args[1].cast<int>();
+  //     int local_worker_id = this->local_rank;
+  //     switch (action) {
+  //       case DiscoMPIAction::kSend: {
+  //         args = args.Slice(2);
+  //         if (worker_id == -1) {
+  //           local_session_->BroadcastPacked(args);
+  //         } else {
+  //           local_session_->SendPacked(local_worker_id, args);
+  //         }
+  //         break;
+  //       }
+  //       case DiscoMPIAction::kReceive: {
+  //         args = local_session_->RecvReplyPacked(local_worker_id);
+  //         to_master_channel->Reply(args);
+  //         break;
+  //       }
+  //       case DiscoMPIAction::kShutdown: {
+  //         local_session_->Shutdown();
+  //         return;
+  //       }
+  //       default:
+  //         LOG(FATAL) << "Invalid action " << static_cast<int>(action);
+  //     }
+  //   }
+  // }
 
   // void Shutdown() final {
   //   // local session will be implicitly shutdown by its destructor
@@ -319,22 +330,26 @@ class MPISessionObj : public BcastSessionObj {
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("runtime.disco.MPISession", MPISessionObj,BcastSessionObj);
   
   int num_workers_;
-  int num_group_ = 1;
+  int num_groups_ = 1;
   const char* ex_name_;
+  MPI_Comm intercomm;
+  std::thread worker_thread;
+
+  BcastSession local_session_{nullptr};
+
+std::unique_ptr<DiscoWorkerThread> worker_0_  = nullptr;
+  std::vector<MPIRankStream> stream_;
+  std::vector<std::unique_ptr<DiscoMPIChannel>> channels;
+  //other ranks use.
+
+  MPIRankStream to_master_stream{0};
+  std::unique_ptr<DiscoMPIChannel> to_master_channel;
 
   int num_workers_per_node;
 
   int local_rank;
   int world_rank;
-  BcastSession local_session_{nullptr};
 
- 
-  std::unique_ptr<DiscoWorkerThread> worker_thread;
-  std::vector<MPIRankStream> remote_stream;
-  std::vector<std::unique_ptr<DiscoMPIChannel>> remote_channels;
-  //other ranks use.
-  MPIRankStream localStream{0};
-  std::unique_ptr<DiscoMPIChannel> local_channel;
 };
 
 
