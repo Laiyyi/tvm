@@ -34,6 +34,8 @@
 #include "./message_queue.h"
 #include "./protocol.h"
 
+#include "mpi_context.h"
+
 namespace tvm {
 namespace runtime {
 
@@ -79,6 +81,53 @@ class ProcessSessionObj final : public BcastSessionObj {
     for (int i = 0; i < num_workers - 1; ++i) {
       workers_.emplace_back(std::make_unique<DiscoProcessChannel>(write_fds[i], read_fds[i]));
     }
+  }
+  // for mpi
+  explicit ProcessSessionObj( int num_workers, int num_groups )
+      : worker_0_( std::make_unique<DiscoWorkerThread>(0, num_workers, num_groups, &worker_zero_data_)){
+      
+      MPI_CALL(MPI_Init(nullptr, nullptr));
+
+      std::vector<int64_t> read_fds(num_workers - 1);
+      std::vector<int64_t> write_fds(num_workers - 1);
+      read_fds.reserve(num_workers - 1);
+      write_fds.reserve(num_workers - 1);
+
+      for (int i = 1; i < num_workers; ++i) {
+         int pipe_main_to_child[2], pipe_child_to_main[2];
+         pipe(pipe_main_to_child);
+         pipe(pipe_child_to_main);
+
+         read_fds[i - 1] = pipe_child_to_main[0];   // child -> parent read
+         write_fds[i - 1] = pipe_main_to_child[1];  // parent -> child write
+      }
+
+      // 組成字串: "r1,w1;r2,w2;..."
+      std::ostringstream oss;
+      for (size_t i = 0; i < read_fds.size(); ++i) {
+          if (i != 0) oss << ";";
+          oss << read_fds[i] << "," << write_fds[i];
+      }
+      std::string pipe_arg = oss.str();
+
+      MPI_Comm intercomm;
+      const char* worker_command = "python3";
+      char* worker_argv[] = {
+      (char*)"tvm.exec.disco_worker", 
+      (char*)"mpi",
+      (char*)num_workers.c_str(),
+      (char*)num_groups.c_str(),
+      nullptr};
+
+      MPI_Comm_spawn(
+       worker_command, 
+       worker_argv, 
+       num_workers,
+       MPI_INFO_NULL, 0, 
+       MPI_COMM_WORLD, 
+       &intercomm,
+       MPI_ERRCODES_IGNORE);
+
   }
 
   void Kill() {
@@ -169,6 +218,7 @@ class ProcessSessionObj final : public BcastSessionObj {
   std::unique_ptr<DiscoWorkerThread> worker_0_;
   std::vector<std::unique_ptr<DiscoProcessChannel>> workers_;
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("runtime.disco.ProcessSession", ProcessSessionObj, SessionObj);
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("runtime.disco.MPIParentSession", ProcessSessionObj, SessionObj);
 };
 
 Session Session::ProcessSession(int num_workers, int num_group, ffi::String process_pool_creator,
@@ -183,6 +233,14 @@ Session Session::ProcessSession(int num_workers, int num_group, ffi::String proc
   return Session(n);
 }
 
+Session Session::ProcessSession(int num_workers, int num_group ) {
+  CHECK_EQ(num_workers % num_group, 0)
+      << "The number of workers should be divisible by the number of worker group.";
+  auto n = ffi::make_object<ProcessSessionObj>(num_workers, num_group);
+  return Session(n);
+}
+
+
 void WorkerProcess(int worker_id, int num_workers, int num_group, int64_t read_fd,
                    int64_t write_fd) {
   CHECK_EQ(num_workers % num_group, 0)
@@ -192,12 +250,54 @@ void WorkerProcess(int worker_id, int num_workers, int num_group, int64_t read_f
   worker.MainLoop();
 }
 
+void MPIChildProcess(int num_workers, int num_group) {
+  CHECK_EQ(num_workers % num_group, 0)
+      << "The number of workers should be divisible by the number of worker group.";
+  int local_rank;
+  MPI_CALL(MPI_Init(nullptr, nullptr));
+  MPI_Comm_rank(MPI_COMM_WORLD, &local_rank);
+
+   int rank, world_size;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+
+  int pipe1[2];
+  int pipe2[2];
+
+  pipe(pipe1);  // pipe1[0]=read, pipe1[1]=write
+  pipe(pipe2);
+
+  // 模擬原本設計：
+  int read_fd = pipe1[0];
+  int write_fd = pipe2[1];
+
+  // （如果你要雙向通信）
+  worker_read = pipe2[0]
+  worker_write = pipe1[1]
+
+
+  
+  int main_read, worker_write;
+  int worker_read, main_write;
+
+  pipe(&main_read, &worker_write);
+  pipe(&worker_read, &main_write);
+
+
+
+  DiscoProcessChannel channel(read_fd, write_fd);
+  DiscoWorker worker(worker_id, num_workers, num_group, nullptr, &channel);
+  worker.MainLoop();
+}
+
+
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<ProcessSessionObj>();
   refl::GlobalDef()
       .def("runtime.disco.SessionProcess", Session::ProcessSession)
       .def("runtime.disco.WorkerProcess", WorkerProcess);
+      .def("runtime.disco.MPIWorkerProcess", MPIChildProcess);
 }
 
 }  // namespace runtime

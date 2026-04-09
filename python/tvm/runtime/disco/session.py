@@ -582,8 +582,8 @@ class ProcessSession(Session):
         func = self.get_global_func("runtime.disco._configure_structlog")
         func(config, os.getpid())
 
-@register_object("runtime.disco.ProcessSession")
-class MPISession(ProcessSession):
+@register_object("runtime.disco.MPIParentSession")
+class MPIParentSession(Session):
     """A Disco session that uses MPI for multi-process communication and execution."""
 
     def __init__(
@@ -596,10 +596,8 @@ class MPISession(ProcessSession):
             _ffi_api.SessionProcess,  # type: ignore # pylint: disable=no-member
             num_workers,
             num_groups,
-            "runtime.disco.create_process_pool",
             entrypoint,
         )        
-        self._configure_structlog()
 
 @register_global_func("runtime.disco.create_socket_session_local_workers")
 def _create_socket_session_local_workers(num_workers) -> Session:
@@ -610,7 +608,7 @@ def _create_socket_session_local_workers(num_workers) -> Session:
 @register_global_func("runtime.disco.create_mpi_session_local_workers")
 def _create_mpi_session_local_workers(num_workers) -> Session:
     """Create the local session for each distributed node over socket session."""
-    return MPISession(num_workers)
+    return MPIParentSession(num_workers)
 
 
 @register_object("runtime.disco.SocketSession")
@@ -638,18 +636,11 @@ class SocketSession(Session):
 class MPISession(Session):
     """A Disco session for MPI"""
     def __init__(
-            self, num_workers: int) -> None:
-        
+            self, num_workers: int) -> None: 
         self.__init_handle_by_constructor__(
             _ffi_api.MPISession,  # type: ignore # pylint: disable=no-member
             num_workers,
-            self.get_exec_name(),
         )
-    def get_exec_name(self) -> str:
-        import inspect
-        fname = inspect.currentframe().f_back.f_back
-        fname = fname.f_code.co_filename
-        return fname
 
 
 @register_global_func("runtime.disco._configure_structlog")

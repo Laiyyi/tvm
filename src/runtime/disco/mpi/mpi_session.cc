@@ -82,10 +82,9 @@ class DiscoMPIChannel : public DiscoChannel {
   DiscoStreamMessageQueue message_queue_;
 };
 
-class MPISessionObj : public BcastSessionObj {
+class MPISessionObj final : public BcastSessionObj {
  public:
-  explicit MPISessionObj(int num_workers, const ffi::String& ex_name)
-  : num_workers_(num_workers) {
+  explicit MPISessionObj(int num_workers)  : num_workers_(num_workers) {
 
   MPI_CALL(MPI_Init(nullptr, nullptr));
   const auto f_create_local_session =
@@ -353,8 +352,8 @@ std::unique_ptr<DiscoWorkerThread> worker_0_  = nullptr;
 };
 
 
-Session MPISession( int num_workers, const ffi::String& ex_name ) {
-  auto n = ffi::make_object<MPISessionObj>(num_workers, ex_name);
+Session MPISession( int num_workers ) {
+  auto n = ffi::make_object<MPISessionObj>( num_workers );
   return Session(n);
 }
 

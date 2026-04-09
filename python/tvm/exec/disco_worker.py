@@ -99,10 +99,15 @@ def _make_callback(device: tvm.runtime.Device) -> Callable[[str, int], Tensor]:
 
 def main():
     """Main worker function"""
-    if len(sys.argv) != 6:
+    isMPI = False
+    if len(sys.argv) == 3 and sys.argv[1] == "mpi":
+        isMPI = True
+    elif len(sys.argv) != 6:
         print("Usage: <worker_id> <num_workers> <num_groups> <read_fd> <write_fd>")
         return
-    worker_id = int(sys.argv[1])
+    
+    if not isMPI:
+       worker_id = int(sys.argv[1])
     num_workers = int(sys.argv[2])
     num_groups = int(sys.argv[3])
     if sys.platform == "win32":
@@ -114,8 +119,12 @@ def main():
         reader = int(sys.argv[4])
         writer = int(sys.argv[5])
 
-    worker_func = get_global_func("runtime.disco.WorkerProcess")
-    worker_func(worker_id, num_workers, num_groups, reader, writer)
+    if isMPI:
+        worker_func = get_global_func("runtime.disco.MPIChildProcess")
+        worker_func(num_workers, num_groups)
+    else:
+        worker_func = get_global_func("runtime.disco.WorkerProcess")
+        worker_func(worker_id, num_workers, num_groups, reader, writer)
 
 
 if __name__ == "__main__":
