@@ -84,6 +84,15 @@ class BcastSessionObj : public SessionObj {
    */
   virtual ffi::PackedArgs RecvReplyPacked(int worker_id) = 0;
 
+  /*!
+   * \brief Atomically swap W_0's ring_in channel. SocketSession uses this
+   *        to redirect cross-node ring inbound through a proxy pipe.
+   *        Default no-op; ProcessSession overrides.
+   * \param new_ch New channel to install; ownership taken.
+   * \return Previously installed channel; ownership returned to caller.
+   */
+  virtual std::unique_ptr<DiscoRingChannel> RerouteRingIn(std::unique_ptr<DiscoRingChannel> new_ch) { return nullptr; }
+
   /*! \brief A side channel to communicate with worker-0 */
   WorkerZeroData worker_zero_data_;
   /*! \brief Number of registers used, including those in `free_regs_` */
@@ -95,7 +104,7 @@ class BcastSessionObj : public SessionObj {
   friend struct Internal;
   friend class SocketSessionObj;
   friend class RemoteSocketSession;
-  friend class MPISessionObj;
+  
 };
 
 /*!

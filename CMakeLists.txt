@@ -335,6 +335,7 @@ tvm_file_glob(GLOB RUNTIME_SRCS
   src/runtime/vm/*.cc
   src/runtime/memory/*.cc
   src/runtime/disco/*.cc
+  src/runtime/disco/cpu/*.cc
   src/runtime/minrpc/*.cc
   src/runtime/vm/*.cc
 )

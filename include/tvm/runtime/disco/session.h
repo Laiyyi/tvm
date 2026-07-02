@@ -76,10 +76,14 @@
 #include <tvm/runtime/int_tuple.h>
 #include <tvm/runtime/object.h>
 #include <tvm/runtime/tensor.h>
+#include <unistd.h>
 
 #include <queue>
 #include <string>
 #include <utility>
+
+#include <cerrno>
+#include <cstring>
 
 namespace tvm {
 namespace runtime {
@@ -252,6 +256,9 @@ class SessionObj : public Object {
    */
   TVM_DLL virtual void DebugSetRegister(int64_t reg_id, ffi::AnyView value, int worker_id) = 0;
 
+  /*! \brief Default implementation is a no-op since NCCL/MPI do not use communication rings. */
+  TVM_DLL virtual void BuildRing() {}
+
   struct FFI;
   friend struct SessionObj::FFI;
   friend class DRefObj;
@@ -275,7 +282,7 @@ class Session : public ObjectRef {
    * \param num_workers The number of workers.
    * \param num_groups The number of worker groups.
    */
-  TVM_DLL static Session ThreadedSession(int num_workers, int num_groups);
+  TVM_DLL static Session ThreadedSession(int num_workers, int num_groups, bool build_ring);
   /*!
    * \brief Create a session backed by pipe-based multiprocessing
    * \param num_workers The number of workers.
@@ -289,7 +296,7 @@ class Session : public ObjectRef {
    * worker-0 does not exist in the process pool.
    */
   TVM_DLL static Session ProcessSession(int num_workers, int num_groups,
-                                        ffi::String process_pool_creator, ffi::String entrypoint);
+                                        ffi::String process_pool_creator, ffi::String entrypoint, bool build_ring);
 
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(Session, ObjectRef, SessionObj);
 };
@@ -309,6 +316,62 @@ class DiscoChannel {
   virtual void Reply(const ffi::PackedArgs& args) = 0;
   /*! \brief Receive a reply from the worker */
   virtual ffi::PackedArgs RecvReply() = 0;
+};
+
+/*!
+ * \brief Fd-based ring channel. Works with any POSIX fd (pipe, socket).
+ *        Owns the fd; closes in destructor. Move-only.
+ */
+class DiscoRingChannel {
+ public:
+  explicit DiscoRingChannel(int fd) : fd_(fd) {
+    ICHECK_GE(fd_, 0) << "DiscoRingChannel: invalid fd " << fd_;
+  }
+  ~DiscoRingChannel() { Close(); }
+
+  DiscoRingChannel(const DiscoRingChannel&) = delete;
+  DiscoRingChannel& operator=(const DiscoRingChannel&) = delete;
+  DiscoRingChannel(DiscoRingChannel&& other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
+
+  void Send(const void* data, size_t size) {
+    const char* write_data = static_cast<const char*>(data);
+    while (size > 0) {
+      ssize_t n;
+      do { n = ::write(fd_, write_data, size); } while (n < 0 && errno == EINTR);
+      ICHECK_GT(n, 0) << "DiscoRingChannel::Send failed: " << std::strerror(errno);
+      write_data += n; size -= n;
+    }
+  }
+
+  void Recv(void* data, size_t size) {
+    char* read_data = static_cast<char*>(data);
+    while (size > 0) {
+      ssize_t n;
+      do { n = ::read(fd_, read_data, size); } while (n < 0 && errno == EINTR);
+      ICHECK_GT(n, 0) << "DiscoRingChannel::Recv failed: " << std::strerror(errno);
+      read_data += n; size -= n;
+    }
+  }
+
+
+  ssize_t ReadSome(void* data, size_t max_size) {
+    if (fd_ < 0) return 0;
+    ssize_t n;
+    do { n = ::read(fd_, data, max_size); } while (n < 0 && errno == EINTR);
+    return n;
+  }
+
+  ssize_t WriteSome(const void* data, size_t size) {
+    if (fd_ < 0) return -1;
+    ssize_t n;
+    do { n = ::write(fd_, data, size); } while (n < 0 && errno == EINTR);
+    return n;
+  }
+
+  void Close() { if (fd_ >= 0) { ::close(fd_); fd_ = -1; } }
+
+  private:
+   int fd_;
 };
 
 /*!
