@@ -23,12 +23,10 @@
 #include <tvm/runtime/object.h>
 
 #include <memory>
-#include <sstream>
 #include <utility>
 #include <vector>
 
 #include "../../support/pipe.h"
-#include "../minrpc/rpc_reference.h"
 #include "./bcast_session.h"
 #include "./disco_worker_thread.h"
 #include "./message_queue.h"
@@ -59,9 +57,67 @@ class DiscoProcessChannel final : public DiscoChannel {
   DiscoStreamMessageQueue worker_to_controler_;
 };
 
+// class DiscoProcessRingChannel final : public DiscoRingChannel {
+//  public:
+//   explicit DiscoProcessRingChannel(int64_t fd)
+//       : fd_(static_cast<int>(fd)) { ICHECK_GE(fd_, 0) << "DiscoProcessRingChannel: invalid fd " << fd_; }
+
+//   ~DiscoProcessRingChannel() {if (fd_ >= 0) ::close(fd_);}
+
+//   DiscoProcessRingChannel(const DiscoProcessRingChannel&) = delete;
+//   DiscoProcessRingChannel& operator=(const DiscoProcessRingChannel&) = delete;
+//   DiscoProcessRingChannel(DiscoProcessRingChannel&& other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
+
+//   void Send(const void* data, size_t size) {
+//     const char* write_data = static_cast<const char*>(data);
+//     while (size > 0) {
+//       ssize_t n;
+//       do { n = ::write(fd_, write_data, size); } while (n < 0 && errno == EINTR);
+
+//       ICHECK_GT(n, 0) << "DiscoProcessRingChannel::Send write() failed: " << std::strerror(errno);
+//       write_data    += static_cast<size_t>(n);
+//       size -= static_cast<size_t>(n);
+//     }
+//   }
+
+//   void Recv(void* data, size_t size) {
+//     char* read_data = static_cast<char*>(data);
+//     while (size > 0) {
+//       ssize_t n;
+//       do { n = ::read(fd_, read_data, size); } while (n < 0 && errno == EINTR);
+
+//       ICHECK_GT(n, 0) << "DiscoProcessRingChannel::Recv read() failed (EOF or error): " << std::strerror(errno);
+//       read_data    += static_cast<size_t>(n);
+//       size -= static_cast<size_t>(n);
+//     }
+//   }
+
+//   ssize_t WriteSome(const void* data, size_t size) override {
+//     if (fd_ < 0) return -1;
+//     ssize_t n;
+//     do { n = ::write(fd_, data, size); } while (n < 0 && errno == EINTR);
+//     return n;
+//   }
+
+//   ssize_t ReadSome(void* data, size_t max_size) override {
+//     if (fd_ < 0) return 0;
+//     ssize_t n;
+//     do { n = ::read(fd_, data, max_size); } while (n < 0 && errno == EINTR);
+//     return n;
+//   }
+//   void Close() override {
+//     if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
+//   }
+
+//  private:
+//   int fd_;
+// };
+
+
+
 class ProcessSessionObj final : public BcastSessionObj {
  public:
-  explicit ProcessSessionObj(int num_workers, int num_groups, ffi::Function process_pool)
+  explicit ProcessSessionObj(int num_workers, int num_groups, ffi::Function process_pool, bool build_ring)
       : process_pool_(process_pool),
         worker_0_(
             std::make_unique<DiscoWorkerThread>(0, num_workers, num_groups, &worker_zero_data_)) {
@@ -78,6 +134,19 @@ class ProcessSessionObj final : public BcastSessionObj {
     }
     for (int i = 0; i < num_workers - 1; ++i) {
       workers_.emplace_back(std::make_unique<DiscoProcessChannel>(write_fds[i], read_fds[i]));
+    }
+
+
+    if (build_ring) {
+      ffi::Shape w0_fds = process_pool_(-1).cast<ffi::Shape>();
+      CHECK_EQ(w0_fds.size(), 2) << "process_pool(-1) should return worker_0's 2 ring fds";
+      int64_t w0_ring_in_fd  = w0_fds[0];
+      int64_t w0_ring_out_fd = w0_fds[1];
+
+      ring_in_w0_  = std::make_unique<DiscoRingChannel>(w0_ring_in_fd);
+      ring_out_w0_ = std::make_unique<DiscoRingChannel>(w0_ring_out_fd);
+      worker_0_->worker->ring_in  = ring_in_w0_.get();
+      worker_0_->worker->ring_out = ring_out_w0_.get();
     }
   }
 
@@ -165,32 +234,52 @@ class ProcessSessionObj final : public BcastSessionObj {
     return workers_.at(worker_id - 1).get();
   }
 
+  std::unique_ptr<DiscoRingChannel> RerouteRingIn(std::unique_ptr<DiscoRingChannel> new_ch) override {
+    auto old = std::move(ring_in_w0_);
+    ring_in_w0_ = std::move(new_ch);
+    worker_0_->worker->ring_in = ring_in_w0_.get();
+    return old;
+  }
+
+
   ffi::Function process_pool_;
   std::unique_ptr<DiscoWorkerThread> worker_0_;
   std::vector<std::unique_ptr<DiscoProcessChannel>> workers_;
+  std::unique_ptr<DiscoRingChannel> ring_in_w0_;
+  std::unique_ptr<DiscoRingChannel> ring_out_w0_;
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("runtime.disco.ProcessSession", ProcessSessionObj, SessionObj);
 };
 
 Session Session::ProcessSession(int num_workers, int num_group, ffi::String process_pool_creator,
-                                ffi::String entrypoint) {
+                                ffi::String entrypoint, bool build_ring) {
   CHECK_EQ(num_workers % num_group, 0)
       << "The number of workers should be divisible by the number of worker group.";
   const auto pf = tvm::ffi::Function::GetGlobal(process_pool_creator);
   CHECK(pf) << "ValueError: Cannot find function " << process_pool_creator
             << " in the registry. Please check if it is registered.";
-  auto process_pool = (*pf)(num_workers, num_group, entrypoint).cast<ffi::Function>();
-  auto n = ffi::make_object<ProcessSessionObj>(num_workers, num_group, process_pool);
+  auto process_pool = (*pf)(num_workers, num_group, entrypoint, build_ring).cast<ffi::Function>();
+  auto n = ffi::make_object<ProcessSessionObj>(num_workers, num_group, process_pool, build_ring);
   return Session(n);
 }
 
+
 void WorkerProcess(int worker_id, int num_workers, int num_group, int64_t read_fd,
-                   int64_t write_fd) {
+                   int64_t write_fd, int64_t ring_in_fd,   int64_t ring_out_fd) {
   CHECK_EQ(num_workers % num_group, 0)
       << "The number of workers should be divisible by the number of worker group.";
   DiscoProcessChannel channel(read_fd, write_fd);
   DiscoWorker worker(worker_id, num_workers, num_group, nullptr, &channel);
+
+  std::unique_ptr<DiscoRingChannel> ring_in_ch, ring_out_ch;
+  if (ring_in_fd >= 0 && ring_out_fd >= 0) {
+    ring_in_ch  = std::make_unique<DiscoRingChannel>(ring_in_fd);
+    ring_out_ch = std::make_unique<DiscoRingChannel>(ring_out_fd);
+    worker.ring_in  = ring_in_ch.get();
+    worker.ring_out = ring_out_ch.get();
+  }
   worker.MainLoop();
 }
+
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;

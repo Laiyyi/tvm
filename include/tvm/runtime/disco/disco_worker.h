@@ -58,7 +58,10 @@ class DiscoWorker {
         default_device(Device{DLDeviceType::kDLCPU, 0}),
         worker_zero_data(worker_zero_data),
         channel(channel),
-        register_file{} {}
+        register_file{},
+        ring_in(nullptr),
+        ring_out(nullptr){}
+      
 
   /*! \brief Main loop of the worker */
   void MainLoop();
@@ -91,11 +94,15 @@ class DiscoWorker {
    * \note This data structure is owned by the controler.
    */
   DiscoChannel* channel;
+  
   /*! \brief The registers in the worker */
   std::vector<ffi::Any> register_file;
-
   struct Impl;
   friend struct DiscoWorker::Impl;
+
+/*! \brief CPU communication ring endpoints assigned by the session during BuildRing(). */
+  DiscoRingChannel* ring_out;
+  DiscoRingChannel* ring_in;
 };
 /*!
  * \brief A threadlocal wrapper of DiscoWorker.
