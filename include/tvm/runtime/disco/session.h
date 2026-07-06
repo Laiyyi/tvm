@@ -282,7 +282,7 @@ class Session : public ObjectRef {
    * \param num_workers The number of workers.
    * \param num_groups The number of worker groups.
    */
-  TVM_DLL static Session ThreadedSession(int num_workers, int num_groups);
+  TVM_DLL static Session ThreadedSession(int num_workers, int num_groups, bool build_ring);
   /*!
    * \brief Create a session backed by pipe-based multiprocessing
    * \param num_workers The number of workers.

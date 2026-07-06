@@ -17,16 +17,6 @@
  * under the License.
  */
 
-/*!
- * CPU ring-based collective communication for Disco.
- *
- * Ring topology and connections are established by the session at construction
- * time (when build_ring=true). Each DiscoWorker has:
- *   - ring_out: DiscoChannel* writes to right neighbor
- *   - ring_in:  DiscoChannel* reads from left neighbor
- *
- * This file is pure algorithm — no sockets, no fds, no connection setup.
- */
 
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/runtime/disco/builtin.h>
@@ -45,16 +35,14 @@ namespace tvm {
 namespace runtime {
 namespace cpuccl {
 
-  #ifndef TVM_DISCO_DEVICE_NAME
+#ifndef TVM_DISCO_DEVICE_NAME
 #define TVM_DISCO_DEVICE_NAME "cpu"
 #endif
 #ifndef TVM_DISCO_CCL_NAME
 #define TVM_DISCO_CCL_NAME    "cpuccl"
 #endif
 
-// ─────────────────────────────────────────────────────────────
-//  Element-wise reduce helpers
-// ─────────────────────────────────────────────────────────────
+
 template <typename T>
 static void ReduceInPlace(T* dst, const T* src, int64_t n, ReduceKind op) {
   switch (op) {
@@ -94,23 +82,24 @@ void InitCCL(Session sess, ffi::Shape device_ids) {
   sess->CallPacked(func, device_ids);
 }
 
-void InitCCLPerWorker(ffi::Shape /*device_ids*/) {
+void InitCCLPerWorker(ffi::Shape device_ids) {
   DiscoWorker* worker = DiscoWorker::ThreadLocal();
   ICHECK(worker) << "Must be called on a DiscoWorker thread";
-  ICHECK(worker->ring_in && worker->ring_out)
-      << "CPU ring not built; create session with build_ring=true";
-  worker->ccl = "cpu";   // GetCCLFunc 用這個字串拼出 runtime.disco.cpu.<op>
+  if (worker->num_workers > 1) { 
+    ICHECK(worker->ring_in && worker->ring_out) << "CPU ring not built; create session with build_ring=true";
+  }
+  worker->ccl = "cpu"; 
 }
 
-// SyncWorker - CPU 沒 GPU stream，純 thread/process 同步點，no-op
+
 void SyncWorker() {}
 
-// // ─────────────────────────────────────────────────────────────
-// //  AllReduce - ring-allreduce (reduce-scatter + allgather)
-// // ─────────────────────────────────────────────────────────────
+
 void AllReduce(Tensor send, ReduceKind reduce_kind, bool /*in_group*/, Tensor recv) {
   DiscoWorker* worker = DiscoWorker::ThreadLocal();
-  ICHECK(worker->ring_in && worker->ring_out) << "Ring not initialized";
+  if (worker->num_workers > 1) { 
+    ICHECK(worker->ring_in && worker->ring_out) << "Ring not initialized";
+  }
 
   int        N     = worker->num_workers;
   int        rank  = worker->worker_id;
@@ -205,7 +194,7 @@ void BroadcastFromWorker0(ffi::Optional<Tensor> send, bool /*in_group*/, Tensor 
   int     rank  = worker->worker_id;
   int     N     = worker->num_workers;
   int64_t bytes = recv.Shape().Product() * DataType(recv->dtype).bytes();
-LOG(INFO) << "[ccl bcast] wid=" << rank << " N=" << N << " bytes=" << bytes << " ENTER";
+
   if (rank == 0) {
     ICHECK(send.defined());
     std::memcpy(recv->data, send.value()->data, static_cast<size_t>(bytes));
