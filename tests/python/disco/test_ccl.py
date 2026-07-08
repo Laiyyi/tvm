@@ -18,6 +18,10 @@
 """Tests for NCCL/RCCL"""
 
 import tempfile
+import subprocess
+import sys
+import threading
+
 
 import numpy as np
 import pytest
@@ -30,23 +34,92 @@ from tvm import relax as rx
 from tvm.runtime import disco as di
 from tvm.runtime.vm import VirtualMachine
 from tvm.script import relax as R
+from tvm.exec import disco_worker as _  # pylint: disable=unused-import
 
-_all_session_kinds = [di.ThreadedSession, di.ProcessSession]
-# _ccl = [get_global_func("runtime.disco.compiled_ccl")()]
+_SOCKET_SESSION_TESTER = None
+
+
+def get_free_port():
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+class SocketSessionTester:
+    def __init__(self, num_workers, build_ring=False):
+        num_nodes = 2
+        num_groups = 1
+        assert num_workers % num_nodes == 0
+        num_workers_per_node = num_workers // num_nodes
+        server_host = "localhost"
+        server_port = get_free_port()
+        self.sess = None
+
+        def start_server():
+            self.sess = di.SocketSession(
+                num_nodes, num_workers_per_node, num_groups, server_host, server_port
+            )
+
+        thread = threading.Thread(target=start_server)
+        thread.start()
+        print("there")
+        cmd = "tvm.exec.disco_remote_socket_session"
+        self.remote_nodes = []
+        for _ in range(num_nodes - 1):
+            self.remote_nodes.append(
+                subprocess.Popen(
+                    [
+                        "python3",
+                        "-m",
+                        cmd,
+                        server_host,
+                        str(server_port),
+                        str(num_workers_per_node),
+                    ],
+                    stdout=sys.stdout,
+                    stderr=sys.stderr,
+                )
+            )
+
+        thread.join()
+
+    def __del__(self):
+        for node in self.remote_nodes:
+            node.kill()
+            node.wait() 
+        if self.sess is not None:
+            self.sess.shutdown()
+            del self.sess
+
+
+def create_socket_session(num_workers, build_ring=False):
+    global _SOCKET_SESSION_TESTER
+    if _SOCKET_SESSION_TESTER is not None:
+        del _SOCKET_SESSION_TESTER
+    _SOCKET_SESSION_TESTER = SocketSessionTester(num_workers, build_ring)
+    assert _SOCKET_SESSION_TESTER.sess is not None
+    return _SOCKET_SESSION_TESTER.sess
+
+
+_all_session_kinds = [di.ThreadedSession, di.ProcessSession, create_socket_session]
 _ccl = ["cpuccl"]
+# _ccl.append(get_global_func("runtime.disco.compiled_ccl")())
 
 def create_device_target(ccl):
-    if ccl == "nccl":
-        dev = tvm.cuda(0)
     if ccl == "cpuccl":
         dev = tvm.cpu(0)
-    else:
-        dev = tvm.rocm(0)
-    
-    if ccl == "cpuccl":
         target = tvm.target.intel_graphics
     else:
+        if ccl == "nccl":
+           dev = tvm.cuda(0)
+        else:
+           dev = tvm.rocm(0)
         target = tvm.target.Target.from_device(dev)
+
     return (dev, target)
 
 

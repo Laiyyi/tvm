@@ -63,7 +63,7 @@ def get_free_port():
 
 
 class SocketSessionTester:
-    def __init__(self, num_workers):
+    def __init__(self, num_workers, build_ring=False):
         num_nodes = 2
         num_groups = 1
         assert num_workers % num_nodes == 0
@@ -74,8 +74,7 @@ class SocketSessionTester:
 
         def start_server():
             self.sess = di.SocketSession(
-                num_nodes, num_workers_per_node, num_groups, server_host, server_port
-            )
+                num_nodes, num_workers_per_node, num_groups, server_host, server_port,build_ring)
 
         thread = threading.Thread(target=start_server)
         thread.start()
@@ -109,11 +108,11 @@ class SocketSessionTester:
             del self.sess
 
 
-def create_socket_session(num_workers):
+def create_socket_session(num_workers, build_ring=False):
     global _SOCKET_SESSION_TESTER
     if _SOCKET_SESSION_TESTER is not None:
         del _SOCKET_SESSION_TESTER
-    _SOCKET_SESSION_TESTER = SocketSessionTester(num_workers)
+    _SOCKET_SESSION_TESTER = SocketSessionTester(num_workers, build_ring)
     assert _SOCKET_SESSION_TESTER.sess is not None
     return _SOCKET_SESSION_TESTER.sess
 
@@ -122,9 +121,10 @@ _all_session_kinds = [di.ThreadedSession, di.ProcessSession, create_socket_sessi
 
 
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
-def test_int(session_kind):  # pylint: disable=invalid-name
+@pytest.mark.parametrize("build_ring_", [True, False])
+def test_int(session_kind, build_ring_):  # pylint: disable=invalid-name
     num_workers = 4
-    sess = session_kind(num_workers=num_workers)
+    sess = session_kind(num_workers=num_workers, build_ring=build_ring_)
     func: di.DPackedFunc = sess.get_global_func("tests.disco.add_one")
     result: di.DRef = func(1)
     for i in range(num_workers):
@@ -132,9 +132,10 @@ def test_int(session_kind):  # pylint: disable=invalid-name
 
 
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
-def test_float(session_kind):
+@pytest.mark.parametrize("build_ring_", [True, False])
+def test_float(session_kind, build_ring_):
     num_workers = 4
-    sess = session_kind(num_workers=num_workers)
+    sess = session_kind(num_workers=num_workers, build_ring=build_ring_)
     func: di.DPackedFunc = sess.get_global_func("tests.disco.add_one_float")
     result: di.DRef = func(1.5)
 
@@ -143,9 +144,10 @@ def test_float(session_kind):
 
 
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
-def test_tensor(session_kind):
+@pytest.mark.parametrize("build_ring_", [True, False])
+def test_tensor(session_kind, build_ring_):
     num_workers = 4
-    sess = session_kind(num_workers=num_workers)
+    sess = session_kind(num_workers=num_workers, build_ring=build_ring_)
     device = tvm.cpu(0)
     x_np = np.arange(6).astype("float32").reshape([2, 3])
     y_np = np.arange(6).astype("float32").reshape([2, 3]) + 1
@@ -156,9 +158,10 @@ def test_tensor(session_kind):
 
 
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
-def test_string(session_kind):
+@pytest.mark.parametrize("build_ring_", [True, False])
+def test_string(session_kind, build_ring_):
     num_workers = 4
-    sess = session_kind(num_workers=num_workers)
+    sess = session_kind(num_workers=num_workers, build_ring=build_ring_)
     func: di.DPackedFunc = sess.get_global_func("tests.disco.str")
     result: di.DRef = func("hello")
 
@@ -167,9 +170,10 @@ def test_string(session_kind):
 
 
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
-def test_string_obj(session_kind):
+@pytest.mark.parametrize("build_ring_", [True, False])
+def test_string_obj(session_kind, build_ring_):
     num_workers = 4
-    sess = session_kind(num_workers=num_workers)
+    sess = session_kind(num_workers=num_workers, build_ring=build_ring_)
     func: di.DPackedFunc = sess.get_global_func("tests.disco.str_obj")
     result: di.DRef = func(String("hello"))
 
@@ -180,9 +184,10 @@ def test_string_obj(session_kind):
 
 
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
-def test_shape_tuple(session_kind):
+@pytest.mark.parametrize("build_ring_", [True, False])
+def test_shape_tuple(session_kind, build_ring_):
     num_workers = 4
-    sess = session_kind(num_workers=num_workers)
+    sess = session_kind(num_workers=num_workers, build_ring=build_ring_)
     func: di.DPackedFunc = sess.get_global_func("tests.disco.shape_tuple")
     result: di.DRef = func(ShapeTuple([1, 2, 3]))
     for i in range(num_workers):
@@ -192,9 +197,10 @@ def test_shape_tuple(session_kind):
 
 
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
-def test_vm_module(session_kind):
+@pytest.mark.parametrize("build_ring_", [True, False])
+def test_vm_module(session_kind, build_ring_):
     num_workers = 4
-    sess = session_kind(num_workers=num_workers)
+    sess = session_kind(num_workers=num_workers, build_ring=build_ring_)
 
     # pylint: disable=invalid-name
     @I.ir_module
@@ -236,9 +242,10 @@ def test_vm_module(session_kind):
 
 
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
-def test_vm_multi_func(session_kind):
+@pytest.mark.parametrize("build_ring_", [True, False])
+def test_vm_multi_func(session_kind, build_ring_):
     num_workers = 4
-    sess = session_kind(num_workers=num_workers)
+    sess = session_kind(num_workers=num_workers, build_ring=build_ring_)
 
     # pylint: disable=invalid-name
     @I.ir_module
@@ -305,10 +312,11 @@ def test_vm_multi_func(session_kind):
 
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
 @pytest.mark.parametrize("num_workers", [1, 2, 4])
-def test_num_workers(session_kind, num_workers):
+@pytest.mark.parametrize("build_ring_", [True, False])
+def test_num_workers(session_kind, num_workers, build_ring_):
     if session_kind == create_socket_session and num_workers < 2:
         return
-    sess = session_kind(num_workers=num_workers)
+    sess = session_kind(num_workers=num_workers, build_ring=build_ring_)
     assert sess.num_workers == num_workers
 
 
