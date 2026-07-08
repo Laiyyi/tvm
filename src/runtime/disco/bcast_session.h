@@ -93,12 +93,21 @@ class BcastSessionObj : public SessionObj {
    */
   virtual std::unique_ptr<DiscoRingChannel> RerouteRingIn(std::unique_ptr<DiscoRingChannel> new_ch) { return nullptr; }
 
+
+
+
   /*! \brief A side channel to communicate with worker-0 */
   WorkerZeroData worker_zero_data_;
   /*! \brief Number of registers used, including those in `free_regs_` */
   int reg_count_ = 1;
   /*! \brief The regsiter ids that have been deallocated */
   std::vector<int64_t> free_regs_;
+  /*!
+   * \brief Set once Shutdown() has run. After shutdown the workers are gone, so DeallocReg()
+   * must not broadcast kKillReg to their (now closed) pipes, which would raise SIGPIPE. This
+   * matters because a DRef may outlive the session and only be garbage-collected later.
+   */
+  bool shutdown_ = false;
 
   struct Internal;
   friend struct Internal;

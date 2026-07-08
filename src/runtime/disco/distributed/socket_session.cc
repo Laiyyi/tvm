@@ -295,6 +295,8 @@ class SocketSessionObj : public BcastSessionObj {
   }
 
   void Shutdown() final {
+    if (shutdown_) return;
+    shutdown_ = true;
 
     local_session_->Shutdown();
     if (proxy_out_to_tcp_)  proxy_out_to_tcp_->Close();
