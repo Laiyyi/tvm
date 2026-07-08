@@ -32,15 +32,21 @@ from tvm.runtime.vm import VirtualMachine
 from tvm.script import relax as R
 
 _all_session_kinds = [di.ThreadedSession, di.ProcessSession]
-_ccl = [get_global_func("runtime.disco.compiled_ccl")()]
-
+# _ccl = [get_global_func("runtime.disco.compiled_ccl")()]
+_ccl = ["cpuccl"]
 
 def create_device_target(ccl):
     if ccl == "nccl":
         dev = tvm.cuda(0)
+    if ccl == "cpuccl":
+        dev = tvm.cpu(0)
     else:
         dev = tvm.rocm(0)
-    target = tvm.target.Target.from_device(dev)
+    
+    if ccl == "cpuccl":
+        target = tvm.target.intel_graphics
+    else:
+        target = tvm.target.Target.from_device(dev)
     return (dev, target)
 
 
@@ -48,7 +54,7 @@ def create_device_target(ccl):
 @pytest.mark.parametrize("ccl", _ccl)
 def test_init(session_kind, ccl):
     devices = [0, 1]
-    sess = session_kind(num_workers=len(devices))
+    sess = session_kind(num_workers=len(devices), build_ring=(ccl == "cpuccl"))
     sess.init_ccl(ccl, *devices)
 
 
@@ -56,7 +62,7 @@ def test_init(session_kind, ccl):
 @pytest.mark.parametrize("ccl", _ccl)
 def test_allreduce(session_kind, ccl):
     devices = [0, 1]
-    sess = session_kind(num_workers=len(devices))
+    sess = session_kind(num_workers=len(devices), build_ring=(ccl == "cpuccl"))
     sess.init_ccl(ccl, *devices)
 
     array_1 = np.arange(12, dtype="float32").reshape(3, 4)
@@ -81,8 +87,10 @@ def test_allreduce(session_kind, ccl):
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
 @pytest.mark.parametrize("ccl", _ccl)
 def test_group_allreduce(session_kind, ccl):
+    if ccl == "cpuccl":
+        pytest.skip("cpuccl does not support in_group (group semantics)")
     devices = [0, 1, 2, 3]
-    sess = session_kind(num_workers=len(devices), num_groups=2)
+    sess = session_kind(num_workers=len(devices), num_groups=2, build_ring=(ccl == "cpuccl"))
     sess.init_ccl(ccl, *devices)
 
     array_1 = np.arange(12, dtype="float32").reshape(3, 4)
@@ -118,7 +126,7 @@ def test_group_allreduce(session_kind, ccl):
 @pytest.mark.parametrize("ccl", _ccl)
 def test_allgather(session_kind, ccl):
     devices = [0, 1]
-    sess = session_kind(num_workers=len(devices))
+    sess = session_kind(num_workers=len(devices),build_ring=(ccl == "cpuccl"))
     sess.init_ccl(ccl, *devices)
 
     array = np.arange(36, dtype="float32")
@@ -140,8 +148,10 @@ def test_allgather(session_kind, ccl):
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
 @pytest.mark.parametrize("ccl", _ccl)
 def test_group_allgather(session_kind, ccl):
+    if ccl == "cpuccl":
+        pytest.skip("cpuccl does not support in_group (group semantics)")
     devices = [0, 1, 2, 3]
-    sess = session_kind(num_workers=len(devices), num_groups=2)
+    sess = session_kind(num_workers=len(devices), num_groups=2, build_ring=(ccl == "cpuccl"))
     sess.init_ccl(ccl, *devices)
 
     array_1 = np.arange(36, dtype="float32")
@@ -179,7 +189,7 @@ def test_group_allgather(session_kind, ccl):
 @pytest.mark.parametrize("use_explicit_output", [True, False])
 def test_broadcast(session_kind, ccl, use_explicit_output):
     devices = [0, 1]
-    sess = session_kind(num_workers=len(devices))
+    sess = session_kind(num_workers=len(devices), build_ring=(ccl == "cpuccl"))
     sess.init_ccl(ccl, *devices)
 
     array = np.arange(12, dtype="float32").reshape(3, 4)
@@ -199,8 +209,10 @@ def test_broadcast(session_kind, ccl, use_explicit_output):
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
 @pytest.mark.parametrize("ccl", _ccl)
 def test_group_broadcast(session_kind, ccl):
+    if ccl == "cpuccl":
+        pytest.skip("cpuccl does not support in_group (group semantics)")
     devices = [0, 1, 2, 3]
-    sess = session_kind(num_workers=len(devices), num_groups=2)
+    sess = session_kind(num_workers=len(devices), num_groups=2,build_ring=(ccl == "cpuccl"))
     sess.init_ccl(ccl, *devices)
 
     array_1 = np.arange(12, dtype="float32").reshape(3, 4)
@@ -224,7 +236,7 @@ def test_group_broadcast(session_kind, ccl):
 @pytest.mark.parametrize("use_explicit_output", [True, False])
 def test_scatter(session_kind, ccl, use_explicit_output, capfd):
     devices = [0, 1]
-    sess = session_kind(num_workers=len(devices))
+    sess = session_kind(num_workers=len(devices), build_ring=(ccl == "cpuccl"))
     sess.init_ccl(ccl, *devices)
 
     array = np.arange(36, dtype="float32").reshape(2, 6, 3)
@@ -255,8 +267,10 @@ def test_scatter(session_kind, ccl, use_explicit_output, capfd):
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
 @pytest.mark.parametrize("ccl", _ccl)
 def test_group_scatter(session_kind, ccl, capfd):
+    if ccl == "cpuccl":
+        pytest.skip("cpuccl does not support in_group (group semantics)")
     devices = [0, 1, 2, 3]
-    sess = session_kind(num_workers=len(devices), num_groups=2)
+    sess = session_kind(num_workers=len(devices), num_groups=2, build_ring=(ccl == "cpuccl"))
     sess.init_ccl(ccl, *devices)
 
     array_1 = np.arange(36, dtype="float32").reshape(2, 6, 3)
@@ -311,7 +325,7 @@ def test_scatter_with_implicit_reshape(session_kind, ccl, capfd):
 
     """
     devices = [0, 1]
-    sess = session_kind(num_workers=len(devices))
+    sess = session_kind(num_workers=len(devices), build_ring=(ccl == "cpuccl"))
     sess.init_ccl(ccl, *devices)
 
     array = np.arange(36, dtype="float32").reshape(3, 4, 3)
@@ -340,7 +354,7 @@ def test_scatter_with_implicit_reshape(session_kind, ccl, capfd):
 @pytest.mark.parametrize("ccl", _ccl)
 def test_gather(session_kind, ccl, capfd):
     devices = [0, 1]
-    sess = session_kind(num_workers=len(devices))
+    sess = session_kind(num_workers=len(devices), build_ring=(ccl == "cpuccl"))
     sess.init_ccl(ccl, *devices)
 
     array = np.arange(36, dtype="float32")
@@ -363,8 +377,10 @@ def test_gather(session_kind, ccl, capfd):
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
 @pytest.mark.parametrize("ccl", _ccl)
 def test_group_gather(session_kind, ccl, capfd):
+    if ccl == "cpuccl":
+        pytest.skip("cpuccl does not support in_group (group semantics)")
     devices = [0, 1, 2, 3]
-    sess = session_kind(num_workers=len(devices), num_groups=2)
+    sess = session_kind(num_workers=len(devices), num_groups=2, build_ring=(ccl == "cpuccl"))
     sess.init_ccl(ccl, *devices)
 
     array_1 = np.arange(36, dtype="float32")
@@ -394,8 +410,10 @@ def test_group_gather(session_kind, ccl, capfd):
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
 @pytest.mark.parametrize("ccl", _ccl)
 def test_send_to_next_group_receive_from_prev_group(session_kind, ccl):
+    if ccl == "cpuccl":
+        pytest.skip("cpuccl does not support in_group (group semantics)")
     devices = [0, 1, 2, 3]
-    sess = session_kind(num_workers=len(devices), num_groups=2)
+    sess = session_kind(num_workers=len(devices), num_groups=2, build_ring=(ccl == "cpuccl"))
     sess.init_ccl(ccl, *devices)
 
     array_1 = np.arange(12, dtype="float32").reshape(3, 4)
@@ -416,8 +434,10 @@ def test_send_to_next_group_receive_from_prev_group(session_kind, ccl):
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
 @pytest.mark.parametrize("ccl", _ccl)
 def test_worker2_send_to_worker0(session_kind, ccl):
+    if ccl == "cpuccl":
+        pytest.skip("cpuccl does not support in_group (group semantics)")
     devices = [0, 1, 2, 3]
-    sess = session_kind(num_workers=len(devices), num_groups=2)
+    sess = session_kind(num_workers=len(devices), num_groups=2, build_ring=(ccl == "cpuccl"))
     sess.init_ccl(ccl, *devices)
 
     array = np.arange(start=1, stop=-11, step=-1, dtype="float32").reshape(3, 4)
@@ -432,6 +452,8 @@ def test_worker2_send_to_worker0(session_kind, ccl):
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
 @pytest.mark.parametrize("ccl", _ccl)
 def test_mlp(session_kind, ccl):  # pylint: disable=too-many-locals
+    if ccl == "cpuccl":
+        pytest.skip("cpuccl does not support in_group (group semantics)")
     devices = [0, 1]
     sess = session_kind(num_workers=len(devices))
     sess.init_ccl(ccl, *devices)
@@ -523,8 +545,10 @@ def test_mlp(session_kind, ccl):  # pylint: disable=too-many-locals
 @pytest.mark.parametrize("session_kind", _all_session_kinds)
 @pytest.mark.parametrize("ccl", _ccl)
 def test_attention(session_kind, ccl):  # pylint: disable=too-many-locals,too-many-statements
+    if ccl == "cpuccl":
+        pytest.skip("cpuccl does not support in_group (group semantics)")
     devices = [0, 1]
-    sess = session_kind(num_workers=len(devices))
+    sess = session_kind(num_workers=len(devices),build_ring=(ccl == "cpuccl"))
     sess.init_ccl(ccl, *devices)
 
     # pylint: disable=invalid-name

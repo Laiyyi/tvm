@@ -42,6 +42,23 @@ namespace cpuccl {
 #define TVM_DISCO_CCL_NAME    "cpuccl"
 #endif
 
+template <typename T>
+static void DivideInPlace(T* data, int64_t n, int div) {
+  for (int64_t i = 0; i < n; ++i) data[i] /= static_cast<T>(div);
+}
+
+static void DivideInPlaceBytes(void* data, int64_t numel, DataType dtype, int div) {
+  if (dtype == DataType::Float(32))
+    DivideInPlace(static_cast<float*>(data), numel, div);
+  else if (dtype == DataType::Float(64))
+    DivideInPlace(static_cast<double*>(data), numel, div);
+  else if (dtype == DataType::Int(32))
+    DivideInPlace(static_cast<int32_t*>(data), numel, div);
+  else if (dtype == DataType::Int(64))
+    DivideInPlace(static_cast<int64_t*>(data), numel, div);
+  else
+    LOG(FATAL) << "CPU collective: kAvg unsupported dtype " << dtype;
+}
 
 template <typename T>
 static void ReduceInPlace(T* dst, const T* src, int64_t n, ReduceKind op) {
@@ -59,8 +76,7 @@ static void ReduceInPlace(T* dst, const T* src, int64_t n, ReduceKind op) {
   }
 }
 
-static void ReduceBytes(void* dst, const void* src, int64_t numel,
-                        DataType dtype, ReduceKind op) {
+static void ReduceBytes(void* dst, const void* src, int64_t numel, DataType dtype, ReduceKind op) {
   if (dtype == DataType::Float(32))
     ReduceInPlace(static_cast<float*>(dst),    static_cast<const float*>(src),    numel, op);
   else if (dtype == DataType::Float(64))
@@ -75,9 +91,8 @@ static void ReduceBytes(void* dst, const void* src, int64_t numel,
     LOG(FATAL) << "CPU collective: unsupported dtype " << dtype;
 }
 
-
 void InitCCL(Session sess, ffi::Shape device_ids) {
-  DRef func = sess->GetGlobalFunc("runtime.disco.cpu.init_ccl_per_worker");
+  DRef func = sess->GetGlobalFunc("runtime.disco." TVM_DISCO_CCL_NAME ".init_ccl_per_worker");
   DLOG(INFO) << "Initializing " TVM_DISCO_CCL_NAME " with devices: " << device_ids;
   sess->CallPacked(func, device_ids);
 }
@@ -88,40 +103,39 @@ void InitCCLPerWorker(ffi::Shape device_ids) {
   if (worker->num_workers > 1) { 
     ICHECK(worker->ring_in && worker->ring_out) << "CPU ring not built; create session with build_ring=true";
   }
-  worker->ccl = "cpu"; 
+  worker->ccl = TVM_DISCO_CCL_NAME; 
 }
-
 
 void SyncWorker() {}
 
-
 void AllReduce(Tensor send, ReduceKind reduce_kind, bool /*in_group*/, Tensor recv) {
   DiscoWorker* worker = DiscoWorker::ThreadLocal();
+
   if (worker->num_workers > 1) { 
     ICHECK(worker->ring_in && worker->ring_out) << "Ring not initialized";
   }
 
-  int        N     = worker->num_workers;
-  int        rank  = worker->worker_id;
   DataType   dt    = DataType(send->dtype);
+  int        num_workers     = worker->num_workers;
+  int        rank  = worker->worker_id;
   int64_t    numel = send.Shape().Product();
   int64_t    bytes = numel * dt.bytes();
 
   std::memcpy(recv->data, send->data, static_cast<size_t>(bytes));
   char* buf = static_cast<char*>(recv->data);
 
-  if (N == 1) return;
+  ReduceKind acc_kind = (reduce_kind == ReduceKind::kAvg) ? ReduceKind::kSum : reduce_kind;
 
+  if (num_workers == 1) return;
 
-  int64_t chunk_elem  = (numel + N - 1) / N;       // 每個 chunk 的元素數（ceil 除）
-  int64_t chunk_bytes = chunk_elem * dt.bytes();   // 每個 chunk 的 bytes
-  std::vector<char> tmp(static_cast<size_t>(chunk_bytes));   // 接收暫存
-
+  int64_t chunk_elem  = (numel + num_workers - 1) / num_workers;   
+  int64_t chunk_bytes = chunk_elem * dt.bytes();   
+  std::vector<char> tmp(static_cast<size_t>(chunk_bytes));   
 
   // Phase A: reduce-scatter
-  for (int r = 0; r < N - 1; ++r) {
-    int si = ((rank - r)     % N + N) % N;
-    int ri = ((rank - r - 1) % N + N) % N;
+  for (int r = 0; r < num_workers - 1; ++r) {
+    int si = ((rank - r)     % num_workers + num_workers) % num_workers;
+    int ri = ((rank - r - 1) % num_workers + num_workers) % num_workers;
     int64_t s_off  = si * chunk_bytes;
     int64_t r_off  = ri * chunk_bytes;
     int64_t s_size = std::min(chunk_bytes, bytes - s_off);
@@ -130,13 +144,13 @@ void AllReduce(Tensor send, ReduceKind reduce_kind, bool /*in_group*/, Tensor re
 
     worker->ring_out->Send(buf + s_off, static_cast<size_t>(s_size));
     worker->ring_in ->Recv(tmp.data(),  static_cast<size_t>(r_size));
-    ReduceBytes(buf + r_off, tmp.data(), r_size / dt.bytes(), dt, reduce_kind);
+    ReduceBytes(buf + r_off, tmp.data(), r_size / dt.bytes(), dt, acc_kind);
   }
 
   // Phase B: allgather
-  for (int r = 0; r < N - 1; ++r) {
-    int si = ((rank + 1 - r) % N + N) % N;
-    int ri = ((rank - r)     % N + N) % N;
+  for (int r = 0; r < num_workers - 1; ++r) {
+    int si = ((rank + 1 - r) % num_workers + num_workers) % num_workers;
+    int ri = ((rank - r)     % num_workers + num_workers) % num_workers;
     int64_t s_off  = si * chunk_bytes;
     int64_t r_off  = ri * chunk_bytes;
     int64_t s_size = std::min(chunk_bytes, bytes - s_off);
@@ -146,71 +160,57 @@ void AllReduce(Tensor send, ReduceKind reduce_kind, bool /*in_group*/, Tensor re
     worker->ring_out->Send(buf + s_off, static_cast<size_t>(s_size));
     worker->ring_in ->Recv(buf + r_off, static_cast<size_t>(r_size));
   }
+
+  if (reduce_kind == ReduceKind::kAvg) {
+    DivideInPlaceBytes(buf, numel, dt, num_workers);
+  }
 }
 
-// ─────────────────────────────────────────────────────────────
-//  AllGather - ring allgather (in-place on recv)
-//
-//  每個 worker 持有 send (shape=chunk)；輸出 recv shape = (N, chunk)。
-//  Worker i 把自己的 chunk 寫進 recv[i]，然後沿 ring 環繞 N-1 輪，
-//  每輪送出已知的 chunk、收進下一個未知的 chunk，最終所有 worker
-//  都持有完整的 N 個 chunk。
-// ─────────────────────────────────────────────────────────────
 void AllGather(Tensor send, bool /*in_group*/, Tensor recv) {
   DiscoWorker* worker = DiscoWorker::ThreadLocal();
   ICHECK(worker->ring_in && worker->ring_out);
 
-  int     N           = worker->num_workers;
+  int     num_workers = worker->num_workers;
   int     rank        = worker->worker_id;
   int64_t chunk_bytes = send.Shape().Product() * DataType(send->dtype).bytes();
   char*   buf         = static_cast<char*>(recv->data);
 
-  // 把自己的 chunk 放進 recv 的對應位置 (= recv[rank])
-  std::memcpy(buf + rank * chunk_bytes,
-              send->data,
-              static_cast<size_t>(chunk_bytes));
+  std::memcpy(buf + rank * chunk_bytes, send->data, static_cast<size_t>(chunk_bytes));
 
-  // N == 1 沒 ring，直接結束
-  if (N == 1) return;
+  if (num_workers == 1) return;
 
-  // 沿 ring 環行 N-1 輪
-  // 第 r 輪：送 chunk[(rank - r) % N]，收 chunk[(rank - r - 1) % N]
-  for (int r = 0; r < N - 1; ++r) {
-    int si = ((rank - r)     % N + N) % N;     // 我這輪要送出去的 chunk index
-    int ri = ((rank - r - 1) % N + N) % N;     // 我這輪要收進來的 chunk index
+  for (int r = 0; r < num_workers - 1; ++r) {
+    int si = ((rank - r)     % num_workers + num_workers) % num_workers;
+    int ri = ((rank - r - 1) % num_workers + num_workers) % num_workers;
 
-    worker->ring_out->Send(buf + si * chunk_bytes,
-                            static_cast<size_t>(chunk_bytes));
-    worker->ring_in ->Recv(buf + ri * chunk_bytes,
-                            static_cast<size_t>(chunk_bytes));
+    worker->ring_out->Send(buf + si * chunk_bytes,static_cast<size_t>(chunk_bytes));
+    worker->ring_in ->Recv(buf + ri * chunk_bytes,static_cast<size_t>(chunk_bytes));
   }
 }
 
-
 void BroadcastFromWorker0(ffi::Optional<Tensor> send, bool /*in_group*/, Tensor recv) {
   DiscoWorker* worker = DiscoWorker::ThreadLocal();
-  ICHECK(worker->ring_in && worker->ring_out);
 
-  int     rank  = worker->worker_id;
-  int     N     = worker->num_workers;
-  int64_t bytes = recv.Shape().Product() * DataType(recv->dtype).bytes();
+   if (worker->num_workers > 1) { 
+    ICHECK(worker->ring_in && worker->ring_out) << "Ring not initialized";
+  }
+
+  int     rank            = worker->worker_id;
+  int     num_workers     = worker->num_workers;
+  int64_t bytes           = recv.Shape().Product() * DataType(recv->dtype).bytes();
 
   if (rank == 0) {
     ICHECK(send.defined());
     std::memcpy(recv->data, send.value()->data, static_cast<size_t>(bytes));
-    if (N > 1) {
-  
-      worker->ring_out->Send(recv->data, static_cast<size_t>(bytes));  // 傳整塊 recv
 
+    if (num_workers > 1) {
+      worker->ring_out->Send(recv->data, static_cast<size_t>(bytes));
     }
   } else {
+      worker->ring_in->Recv(recv->data, static_cast<size_t>(bytes));
 
-    worker->ring_in->Recv(recv->data, static_cast<size_t>(bytes));     // 收進 recv
-
-    if (rank < N - 1) {
-
-      worker->ring_out->Send(recv->data, static_cast<size_t>(bytes));  // 轉發給右鄰
-  
+    if (rank < num_workers - 1) {
+      worker->ring_out->Send(recv->data, static_cast<size_t>(bytes));
     }
   }
   
@@ -218,57 +218,89 @@ void BroadcastFromWorker0(ffi::Optional<Tensor> send, bool /*in_group*/, Tensor 
 
 void ScatterFromWorker0(ffi::Optional<Tensor> send, bool /*in_group*/, Tensor recv) {
   DiscoWorker* worker = DiscoWorker::ThreadLocal();
-  ICHECK(worker->ring_in && worker->ring_out);
+
+  if (worker->num_workers > 1) { 
+    ICHECK(worker->ring_in && worker->ring_out) << "Ring not initialized";
+  }
 
   int     rank       = worker->worker_id;
-  int     N          = worker->num_workers;
+  int     num_workers = worker->num_workers;
   int64_t recv_bytes = recv.Shape().Product() * DataType(recv->dtype).bytes();
 
-  // N == 1 特例：直接 memcpy
-  if (N == 1) {
+  if (num_workers == 1) {
     ICHECK(send.defined());
     std::memcpy(recv->data, send.value()->data, static_cast<size_t>(recv_bytes));
-    std::cerr << "[W" << rank << "] recv=[" << static_cast<float*>(recv->data)[0] << "," << static_cast<float*>(recv->data)[1] << "]" << std::endl;
-
+    DLOG(INFO) << "[Disco_worker_" << rank << "] recv=[" << static_cast<float*>(recv->data)[0] 
+      << "," << static_cast<float*>(recv->data)[1] << "]";
     return;
   }
 
   if (rank == 0) {
-    // W0：拿完整 send，留 slice 0，送其餘 (N-1) 個 slice
+
     ICHECK(send.defined()) << "Worker 0 must provide send buffer for scatter";
     char* src = static_cast<char*>(send.value()->data);
-    std::memcpy(recv->data, src, static_cast<size_t>(recv_bytes));   // 留自己的 slice 0
-    int64_t tail = recv_bytes * (N - 1);                              // 後面 (N-1) 個 slice
+    std::memcpy(recv->data, src, static_cast<size_t>(recv_bytes));
+    int64_t tail = recv_bytes * (num_workers - 1);
     worker->ring_out->Send(src + recv_bytes, static_cast<size_t>(tail));
   } else {
-    // Wi：收 (N - rank) 個 slice（= 自己這個 + 比自己右邊的）
-    int64_t incoming = recv_bytes * (N - rank);
+
+    int64_t incoming = recv_bytes * (num_workers - rank);
     std::vector<char> buf(static_cast<size_t>(incoming));
     worker->ring_in->Recv(buf.data(), static_cast<size_t>(incoming));
-
-    // 留 slice 0 = 整體的 slice rank
     std::memcpy(recv->data, buf.data(), static_cast<size_t>(recv_bytes));
 
-    // 若不是鏈尾，把剩下 (N - rank - 1) 個 slice 轉發給右鄰
-    if (rank < N - 1) {
+    if (rank < num_workers - 1) {
       int64_t forward_bytes = incoming - recv_bytes;
-      worker->ring_out->Send(buf.data() + recv_bytes,
-                              static_cast<size_t>(forward_bytes));
+      worker->ring_out->Send(buf.data() + recv_bytes, static_cast<size_t>(forward_bytes));
     }
   }
 }
 
+void GatherToWorker0(Tensor send, bool /*in_group*/, ffi::Optional<Tensor> recv) {
+  DiscoWorker* worker = DiscoWorker::ThreadLocal();
+
+  int     rank        = worker->worker_id;
+  int     num_workers = worker->num_workers;
+  int64_t chunk_bytes = send.Shape().Product() * DataType(send->dtype).bytes();
+
+  if (num_workers == 1) {
+    ICHECK(recv.defined()) << "Worker 0 must provide recv buffer for gather";
+    std::memcpy(recv.value()->data, send->data, static_cast<size_t>(chunk_bytes));
+    return;
+  }
+
+   if (worker->num_workers > 1) { 
+    ICHECK(worker->ring_in && worker->ring_out) << "Ring not initialized";
+  }
+
+  if (rank == 0) {
+    ICHECK(recv.defined()) << "Worker 0 must provide recv buffer for gather";
+    char* dst = static_cast<char*>(recv.value()->data);
+    std::memcpy(dst, send->data, static_cast<size_t>(chunk_bytes));
+    int64_t incoming = chunk_bytes * (num_workers - 1);
+    worker->ring_in->Recv(dst + chunk_bytes, static_cast<size_t>(incoming));
+  } else {
+    int64_t prior = chunk_bytes * (rank - 1);
+    std::vector<char> buf(static_cast<size_t>(prior + chunk_bytes));
+    if (rank > 1) {
+      worker->ring_in->Recv(buf.data(), static_cast<size_t>(prior));
+    }
+    std::memcpy(buf.data() + prior, send->data, static_cast<size_t>(chunk_bytes));
+    worker->ring_out->Send(buf.data(), buf.size());
+  }
+}
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef()
-      .def("runtime.disco.cpu.init_ccl",                InitCCL)
-      .def("runtime.disco.cpu.init_ccl_per_worker",     InitCCLPerWorker)
-      .def("runtime.disco.cpu.allreduce",               AllReduce)
-      .def("runtime.disco.cpu.allgather",               AllGather)
-      .def("runtime.disco.cpu.broadcast_from_worker0",  BroadcastFromWorker0)
-      .def("runtime.disco.cpu.scatter_from_worker0",    ScatterFromWorker0)
-      .def("runtime.disco.cpu.sync_worker",             SyncWorker);
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".init_ccl",                InitCCL)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".init_ccl_per_worker",     InitCCLPerWorker)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".allreduce",               AllReduce)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".allgather",               AllGather)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".broadcast_from_worker0",  BroadcastFromWorker0)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".scatter_from_worker0",    ScatterFromWorker0)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".gather_to_worker0",       GatherToWorker0)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".sync_worker",             SyncWorker);
 }
 
 }  // namespace cpuccl
