@@ -84,12 +84,12 @@ class SocketSessionObj : public BcastSessionObj {
   explicit SocketSessionObj(int num_nodes, int num_workers_per_node, int num_groups,
                             const ffi::String& host, int port,
                             bool build_ring)
-      : num_nodes_(num_nodes), num_workers_per_node_(num_workers_per_node) {
+      : num_nodes_(num_nodes), num_workers_per_node_(num_workers_per_node), build_ring_(build_ring) {
     const auto f_create_local_session =
         tvm::ffi::Function::GetGlobal("runtime.disco.create_socket_session_local_workers");
     ICHECK(f_create_local_session.has_value())
         << "Cannot find function runtime.disco.create_socket_session_local_workers";
-    local_session_ = ((*f_create_local_session)(num_workers_per_node, build_ring)).cast<BcastSession>();
+    local_session_ = ((*f_create_local_session)(num_workers_per_node, build_ring_)).cast<BcastSession>();
     DRef f_init_workers =
         local_session_->GetGlobalFunc("runtime.disco.socket_session_init_workers");
     local_session_->CallPacked(f_init_workers, num_nodes_, /*node_id=*/0, num_groups,
@@ -108,7 +108,7 @@ class SocketSessionObj : public BcastSessionObj {
     packed_args[2] = num_groups;
     packed_args[4] = build_ring;
 
-    if (build_ring) {
+    if (build_ring_) {
       node_hosts_.reserve(num_nodes);
       node_hosts_.push_back(host);
     }
@@ -127,7 +127,7 @@ class SocketSessionObj : public BcastSessionObj {
       remote_channels_.back()->Send(ffi::PackedArgs(packed_args, 5));
       LOG(INFO) << "[Host] Remote node " << addr.AsString() << " connected";
 
-      if (build_ring) {
+      if (build_ring_) {
         std::string full = addr.AsString();
         ffi::String ip(full.substr(0, full.find(':')));
         node_hosts_.push_back(ip);
@@ -136,7 +136,7 @@ class SocketSessionObj : public BcastSessionObj {
     }
 
 
-    if( build_ring && num_nodes_ > 1) {
+    if( build_ring_ && num_nodes_ > 1) {
 
         const int base_ring_port  = port + 1;
         const int socket_node_id  = 0;
@@ -299,6 +299,7 @@ class SocketSessionObj : public BcastSessionObj {
     shutdown_ = true;
 
     local_session_->Shutdown();
+    if (build_ring_) local_session_->CloseRing();
     if (proxy_out_to_tcp_)  proxy_out_to_tcp_->Close();
     if (proxy_in_from_tcp_) proxy_in_from_tcp_->Close();
     if (tcp_in_ch_)        tcp_in_ch_->Close();
@@ -307,7 +308,10 @@ class SocketSessionObj : public BcastSessionObj {
     std::vector<AnyView> packed_args(2);
     ffi::PackedArgs::Fill(packed_args.data(), static_cast<int>(DiscoSocketAction::kShutdown), -1);
     for (auto& channel : remote_channels_) {
-      channel->Send(ffi::PackedArgs(packed_args.data(), packed_args.size()));
+      try {
+        channel->Send(ffi::PackedArgs(packed_args.data(), packed_args.size()));
+      } catch (const std::exception&) {
+      }
     }
     for (auto& socket : remote_sockets_) {
       socket.Close();
@@ -334,6 +338,7 @@ class SocketSessionObj : public BcastSessionObj {
   std::vector<std::unique_ptr<DiscoSocketChannel>> remote_channels_;
   std::vector<ffi::String> node_hosts_;
   BcastSession local_session_{nullptr};
+  bool build_ring_ = false;
 
   private:
    std::unique_ptr<DiscoRingChannel> proxy_out_to_tcp_;
@@ -352,9 +357,15 @@ class RemoteSocketSession {
     socket_.SetKeepAlive(true);
     SockAddr server_addr{server_host.c_str(), server_port};
     Socket::Startup();
-    if (!socket_.Connect(server_addr)) {
+    
+    bool connected = false;
+    for (int i = 0; i < 100; ++i) {
+      if (socket_.Connect(server_addr)) { connected = true; break; }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (!connected) {
       LOG(FATAL) << "Failed to connect to server " << server_addr.AsString()
-                 << ", errno = " << Socket::GetLastErrorCode();
+                 << " after retries, errno = " << Socket::GetLastErrorCode();
     }
     channel_ = std::make_unique<DiscoSocketChannel>(socket_);
     ffi::PackedArgs metadata = channel_->Recv();
@@ -377,16 +388,44 @@ class RemoteSocketSession {
       switch (action) {
         case DiscoSocketAction::kSend: {
           args = args.Slice(2);
+          // Recv() already auto-unwrapped any DiscoDebugObject back to a raw Tensor. Forwarding a
+          // raw Tensor to a local worker re-serializes it, and the message-queue protocol rejects
+          // kTVMFFITensor (kInvalidTypeCodeTensor). Re-wrap Tensors as DiscoDebugObject so they
+          // reach the worker, whose own Recv() unwraps them back to a Tensor.
+          std::vector<ObjectRef> keep_alive;
+          std::vector<AnyView> fwd(args.size());
+          for (int i = 0; i < args.size(); ++i) {
+            if (args[i].type_index() == ffi::TypeIndex::kTVMFFITensor) {
+              keep_alive.push_back(DiscoDebugObject::Wrap(args[i]));
+              fwd[i] = keep_alive.back();
+            } else {
+              fwd[i] = args[i];
+            }
+          }
+          ffi::PackedArgs wrapped(fwd.data(), static_cast<int>(fwd.size()));
           if (worker_id == -1) {
-            local_session_->BroadcastPacked(args);
+            local_session_->BroadcastPacked(wrapped);
           } else {
-            local_session_->SendPacked(local_worker_id, args);
+            local_session_->SendPacked(local_worker_id, wrapped);
           }
           break;
         }
         case DiscoSocketAction::kReceive: {
           args = local_session_->RecvReplyPacked(local_worker_id);
-          channel_->Reply(args);
+          // Symmetric to kSend: the worker's reply may carry a raw Tensor (e.g. the result of a
+          // debug_get_from_remote on this node's worker). Re-wrap before replying over the socket,
+          // or the protocol rejects kTVMFFITensor. The controller's Recv() unwraps it again.
+          std::vector<ObjectRef> keep_alive;
+          std::vector<AnyView> fwd(args.size());
+          for (int i = 0; i < args.size(); ++i) {
+            if (args[i].type_index() == ffi::TypeIndex::kTVMFFITensor) {
+              keep_alive.push_back(DiscoDebugObject::Wrap(args[i]));
+              fwd[i] = keep_alive.back();
+            } else {
+              fwd[i] = args[i];
+            }
+          }
+          channel_->Reply(ffi::PackedArgs(fwd.data(), static_cast<int>(fwd.size())));
           break;
         }
         case DiscoSocketAction::kShutdown: {
@@ -400,9 +439,11 @@ class RemoteSocketSession {
     }
   }
 
-  ~RemoteSocketSession() {  
-    
-    if (local_session_.defined()) local_session_->Shutdown();
+  ~RemoteSocketSession() {
+    if (local_session_.defined()) {
+      local_session_->Shutdown();
+      if (build_ring) local_session_->CloseRing();
+    }
     if (proxy_out_to_tcp_)        proxy_out_to_tcp_->Close();
     if (proxy_in_from_tcp_)       proxy_in_from_tcp_->Close();
     if (tcp_in_ch_)               tcp_in_ch_->Close();

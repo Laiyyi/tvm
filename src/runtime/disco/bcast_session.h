@@ -93,6 +93,16 @@ class BcastSessionObj : public SessionObj {
    */
   virtual std::unique_ptr<DiscoRingChannel> RerouteRingIn(std::unique_ptr<DiscoRingChannel> new_ch) { return nullptr; }
 
+  /*!
+   * \brief Close worker-0's ring channels now, instead of waiting for the object destructor.
+   *        SocketSession calls this on its local session during Shutdown, before joining its proxy
+   *        threads: the send proxy reads the ring pipe whose write end is worker-0's ring_out. With
+   *        a single worker per node that write end lives in-process and is only released at
+   *        destruction, so without closing it here the proxy-thread join deadlocks. Default no-op;
+   *        ProcessSession overrides.
+   */
+  virtual void CloseRing() {}
+
 
 
 

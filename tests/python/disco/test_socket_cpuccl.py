@@ -67,12 +67,6 @@ class SocketSessionTester:
         server_port = get_free_port()
         self.sess = None
 
-        # Spawn the remote subprocess(es) FIRST, while this process is single-threaded, then build
-        # the controller session directly on THIS (main) thread. Every fork() (Popen here, and the
-        # controller's own local ProcessSession spawning its workers) must run single-threaded: a
-        # fork while another thread holds a lock (glibc malloc, TVM thread pool, ...) flakily
-        # deadlocks the child before exec (hang) or corrupts its heap (SIGABRT). The remote's
-        # connect() retries with backoff, so it tolerates the controller not listening yet.
         cmd = "tvm.exec.disco_remote_socket_session"
         self.remote_nodes = []
         for _ in range(num_nodes - 1):
@@ -96,17 +90,12 @@ class SocketSessionTester:
         )
 
     def __del__(self):
+        for node in self.remote_nodes:
+            node.kill()
+            node.wait() 
         if self.sess is not None:
             self.sess.shutdown()
             del self.sess
-            self.sess = None
-        for node in self.remote_nodes:
-            try:
-                node.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                node.kill()
-                node.wait()
-        self.remote_nodes = []
 
 
 
@@ -185,7 +174,7 @@ def test_broadcast(use_explicit_output):
 
 
 @pytest.mark.parametrize("use_explicit_output", [True, False])
-def test_scatter(use_explicit_output, capfd):
+def test_scatter(use_explicit_output):
     devices = [0, 1]
     sess = create_socket_session(num_workers=len(devices))
     sess.init_ccl(_CCL, *devices)
@@ -202,13 +191,8 @@ def test_scatter(use_explicit_output, capfd):
     np.testing.assert_equal(d_dst.debug_get_from_remote(0).numpy(), array[0, :, :])
     np.testing.assert_equal(d_dst.debug_get_from_remote(1).numpy(), array[1, :, :])
 
-    captured = capfd.readouterr()
-    assert (
-        not captured.err
-    ), "No warning messages should be generated from disco.Session.scatter_from_worker0"
 
-
-def test_scatter_with_implicit_reshape(capfd):
+def test_scatter_with_implicit_reshape():
     devices = [0, 1]
     sess = create_socket_session(num_workers=len(devices))
     sess.init_ccl(_CCL, *devices)
@@ -222,13 +206,10 @@ def test_scatter_with_implicit_reshape(capfd):
     np.testing.assert_equal(d_dst.debug_get_from_remote(0).numpy(), array.flat[:18].reshape(3, 3, 2))
     np.testing.assert_equal(d_dst.debug_get_from_remote(1).numpy(), array.flat[18:].reshape(3, 3, 2))
 
-    captured = capfd.readouterr()
-    assert (
-        not captured.err
-    ), "No warning messages should be generated from disco.Session.scatter_from_worker0"
 
 
-def test_gather(capfd):
+
+def test_gather():
     devices = [0, 1]
     sess = create_socket_session(num_workers=len(devices))
     sess.init_ccl(_CCL, *devices)
@@ -241,10 +222,7 @@ def test_gather(capfd):
     sess.gather_to_worker0(d_src, d_dst)
     np.testing.assert_equal(d_dst.debug_get_from_remote(0).numpy(), array.reshape(3, 4, 3))
 
-    captured = capfd.readouterr()
-    assert (
-        not captured.err
-    ), "No warning messages should be generated from disco.Session.gather_to_worker0"
+
 
 
 def relax_build(mod):

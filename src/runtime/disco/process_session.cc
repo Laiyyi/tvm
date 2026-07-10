@@ -57,63 +57,6 @@ class DiscoProcessChannel final : public DiscoChannel {
   DiscoStreamMessageQueue worker_to_controler_;
 };
 
-// class DiscoProcessRingChannel final : public DiscoRingChannel {
-//  public:
-//   explicit DiscoProcessRingChannel(int64_t fd)
-//       : fd_(static_cast<int>(fd)) { ICHECK_GE(fd_, 0) << "DiscoProcessRingChannel: invalid fd " << fd_; }
-
-//   ~DiscoProcessRingChannel() {if (fd_ >= 0) ::close(fd_);}
-
-//   DiscoProcessRingChannel(const DiscoProcessRingChannel&) = delete;
-//   DiscoProcessRingChannel& operator=(const DiscoProcessRingChannel&) = delete;
-//   DiscoProcessRingChannel(DiscoProcessRingChannel&& other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
-
-//   void Send(const void* data, size_t size) {
-//     const char* write_data = static_cast<const char*>(data);
-//     while (size > 0) {
-//       ssize_t n;
-//       do { n = ::write(fd_, write_data, size); } while (n < 0 && errno == EINTR);
-
-//       ICHECK_GT(n, 0) << "DiscoProcessRingChannel::Send write() failed: " << std::strerror(errno);
-//       write_data    += static_cast<size_t>(n);
-//       size -= static_cast<size_t>(n);
-//     }
-//   }
-
-//   void Recv(void* data, size_t size) {
-//     char* read_data = static_cast<char*>(data);
-//     while (size > 0) {
-//       ssize_t n;
-//       do { n = ::read(fd_, read_data, size); } while (n < 0 && errno == EINTR);
-
-//       ICHECK_GT(n, 0) << "DiscoProcessRingChannel::Recv read() failed (EOF or error): " << std::strerror(errno);
-//       read_data    += static_cast<size_t>(n);
-//       size -= static_cast<size_t>(n);
-//     }
-//   }
-
-//   ssize_t WriteSome(const void* data, size_t size) override {
-//     if (fd_ < 0) return -1;
-//     ssize_t n;
-//     do { n = ::write(fd_, data, size); } while (n < 0 && errno == EINTR);
-//     return n;
-//   }
-
-//   ssize_t ReadSome(void* data, size_t max_size) override {
-//     if (fd_ < 0) return 0;
-//     ssize_t n;
-//     do { n = ::read(fd_, data, max_size); } while (n < 0 && errno == EINTR);
-//     return n;
-//   }
-//   void Close() override {
-//     if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
-//   }
-
-//  private:
-//   int fd_;
-// };
-
-
 
 class ProcessSessionObj final : public BcastSessionObj {
  public:
@@ -239,6 +182,11 @@ class ProcessSessionObj final : public BcastSessionObj {
     ring_in_w0_ = std::move(new_ch);
     worker_0_->worker->ring_in = ring_in_w0_.get();
     return old;
+  }
+
+  void CloseRing() override {
+    ring_out_w0_.reset();
+    ring_in_w0_.reset();
   }
 
 
