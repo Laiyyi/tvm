@@ -123,7 +123,10 @@ class BcastSessionObj : public SessionObj {
   friend struct Internal;
   friend class SocketSessionObj;
   friend class RemoteSocketSession;
-  
+  // RingProxyEndpoint wires the cross-node ring for both controller and remote; it calls the
+  // protected RerouteRingIn hook on the local session.
+  friend class RingProxyEndpoint;
+
 };
 
 /*!

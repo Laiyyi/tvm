@@ -213,7 +213,7 @@ void BroadcastFromWorker0(ffi::Optional<Tensor> send, bool /*in_group*/, Tensor 
       worker->ring_out->Send(recv->data, static_cast<size_t>(bytes));
     }
   }
-  
+
 }
 
 void ScatterFromWorker0(ffi::Optional<Tensor> send, bool /*in_group*/, Tensor recv) {

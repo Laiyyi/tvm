@@ -79,6 +79,85 @@ void ProxyLoop(DiscoRingChannel* src, DiscoRingChannel* dst, std::string tag) {
   }
 }
 
+class RingProxyEndpoint {
+ public:
+  void Connect(int node_id, int num_nodes, int base_ring_port,
+               const std::vector<ffi::String>& node_hosts, const BcastSession& local_session,
+               const std::string& tag) {
+    const int next_node_id = (node_id + 1) % num_nodes;
+    const int recv_port    = base_ring_port + node_id;
+    const int send_port    = base_ring_port + next_node_id;
+
+    LOG(INFO) << "[Ring " << tag << "] node_id=" << node_id << " listen=:" << recv_port
+              << " connect_to=" << node_hosts[next_node_id].c_str() << ":" << send_port;
+
+    // Inbound: accept the previous node's connection on our recv_port.
+    TCPSocket recv_sock;
+    std::thread accept_thread([recv_port, &recv_sock, &tag]() {
+      TCPSocket listen_sock;
+      listen_sock.Create();
+      listen_sock.SetKeepAlive(true);
+      listen_sock.Bind(SockAddr("0.0.0.0", recv_port));
+      listen_sock.Listen();
+      SockAddr tmp_addr;
+      recv_sock = listen_sock.Accept(&tmp_addr);
+      LOG(INFO) << "[Ring " << tag << "] inbound from " << tmp_addr.AsString();
+      listen_sock.Close();
+    });
+
+    // Outbound: connect to the next node, retrying until it is listening.
+    TCPSocket send_sock;
+    send_sock.Create();
+    send_sock.SetKeepAlive(true);
+    bool ok = false;
+    for (int i = 0; i < 100; ++i) {
+      if (send_sock.Connect(SockAddr(node_hosts[next_node_id].c_str(), send_port))) {
+        ok = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ICHECK(ok) << "[Ring " << tag << "] failed to connect to next node "
+               << node_hosts[next_node_id].c_str() << ":" << send_port;
+    accept_thread.join();
+    LOG(INFO) << "[Ring " << tag << "] ring TCP ready";
+
+    tcp_in_ch_  = std::make_unique<DiscoRingChannel>(recv_sock.Release());
+    tcp_out_ch_ = std::make_unique<DiscoRingChannel>(send_sock.Release());
+
+    // Splice the local session's W0 ring pipe onto the TCP ring via a pipe + two proxy threads.
+    int sess_fds[2];  // 0:read 1:write
+    ICHECK_EQ(::pipe(sess_fds), 0);
+    proxy_out_to_tcp_ = local_session->RerouteRingIn(std::make_unique<DiscoRingChannel>(sess_fds[0]));
+    ICHECK(proxy_out_to_tcp_);
+    proxy_in_from_tcp_ = std::make_unique<DiscoRingChannel>(sess_fds[1]);
+
+    send_thread_ = std::thread(ProxyLoop, proxy_out_to_tcp_.get(), tcp_out_ch_.get(), tag + "-send");
+    recv_thread_ = std::thread(ProxyLoop, tcp_in_ch_.get(), proxy_in_from_tcp_.get(), tag + "-recv");
+    LOG(INFO) << "[Ring " << tag << "] send/recv proxy threads started";
+  }
+
+  void Close() {
+    if (proxy_out_to_tcp_)  proxy_out_to_tcp_->Close();
+    if (proxy_in_from_tcp_) proxy_in_from_tcp_->Close();
+    if (tcp_in_ch_)         tcp_in_ch_->Close();
+    if (tcp_out_ch_)        tcp_out_ch_->Close();
+  }
+
+  void Join() {
+    if (send_thread_.joinable()) send_thread_.join();
+    if (recv_thread_.joinable()) recv_thread_.join();
+  }
+
+ private:
+  std::unique_ptr<DiscoRingChannel> proxy_out_to_tcp_;
+  std::unique_ptr<DiscoRingChannel> proxy_in_from_tcp_;
+  std::unique_ptr<DiscoRingChannel> tcp_in_ch_;
+  std::unique_ptr<DiscoRingChannel> tcp_out_ch_;
+  std::thread send_thread_;
+  std::thread recv_thread_;
+};
+
 class SocketSessionObj : public BcastSessionObj {
  public:
   explicit SocketSessionObj(int num_nodes, int num_workers_per_node, int num_groups,
@@ -138,17 +217,9 @@ class SocketSessionObj : public BcastSessionObj {
 
     if( build_ring_ && num_nodes_ > 1) {
 
-        const int base_ring_port  = port + 1;
-        const int socket_node_id  = 0;
-        const int next_node_id    = (socket_node_id + 1) % num_nodes_;
-        const int recv_port       = base_ring_port + socket_node_id;
-        const int send_port       = base_ring_port + next_node_id;
+        const int base_ring_port = port + 1;
 
-        LOG(INFO) << "[Host] RingTcp controller setup: socket_node=" << socket_node_id
-            << " listen=:" << recv_port
-            << " connect_to=" << node_hosts_[next_node_id].c_str() << ":" << send_port;
-
-        //Broadcast ip and base_ring_port to all remote workers.
+        // Broadcast base_ring_port + the IP table so every remote node can wire its ring.
         {
           std::vector<AnyView> baseport_ip(num_nodes_ + 1);
           baseport_ip[0] = base_ring_port;
@@ -159,55 +230,11 @@ class SocketSessionObj : public BcastSessionObj {
           LOG(INFO) << "[Host] IP and port broadcast completed.";
         }
 
-        TCPSocket recv_sock;
-        std::thread accept_thread([this, recv_port, &recv_sock]() {
-              TCPSocket listen_sock;
-              listen_sock.Create();
-              listen_sock.SetKeepAlive(true);
-              listen_sock.Bind(SockAddr("0.0.0.0", recv_port));
-              listen_sock.Listen();
-              SockAddr tmp_addr;
-              recv_sock = listen_sock.Accept(&tmp_addr);
-              LOG(INFO) << "[Host] Recv from " << tmp_addr.AsString();
-              listen_sock.Close();
-        });
+        ring_.Connect(/*node_id=*/0, num_nodes_, base_ring_port, node_hosts_, local_session_,"controller");
 
-        TCPSocket send_sock;
-        send_sock.Create();
-        send_sock.SetKeepAlive(true);
-        bool ok = false;
-        for (int i = 0; i < 100; ++i) {
-           if (send_sock.Connect(SockAddr(node_hosts_[next_node_id].c_str(), send_port))) { ok = true; break; }
-           std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        ICHECK(ok);
-        accept_thread.join();
-
-
-        tcp_in_ch_ = std::make_unique<DiscoRingChannel>(recv_sock.sockfd);
-        recv_sock.sockfd = Socket::INVALID_SOCKET;
-        tcp_out_ch_ = std::make_unique<DiscoRingChannel>(send_sock.sockfd);
-        send_sock.sockfd = Socket::INVALID_SOCKET;
-
-
-        // 0:read 1:write
-        int sess_fds[2];
-        ICHECK_EQ(::pipe(sess_fds), 0);
-
-        proxy_out_to_tcp_= local_session_->RerouteRingIn(std::make_unique<DiscoRingChannel>(sess_fds[0]));
-        ICHECK(proxy_out_to_tcp_);
-
-        proxy_in_from_tcp_= std::make_unique<DiscoRingChannel>(sess_fds[1]);
-       
-
-        send_thread_ = std::thread(ProxyLoop, proxy_out_to_tcp_.get(), tcp_out_ch_.get(), "controller-send");
-        recv_thread_ = std::thread(ProxyLoop, tcp_in_ch_.get(), proxy_in_from_tcp_.get(), "controller-recv");
-        const int num_workers_ = num_nodes_ * num_workers_per_node_;
-        for (int worker_id = 1; worker_id < num_workers_; ++worker_id) { this->SyncWorker(worker_id); }
-        
+        const int num_workers = num_nodes_ * num_workers_per_node_;
+        for (int worker_id = 1; worker_id < num_workers; ++worker_id) { this->SyncWorker(worker_id); }
         LOG(INFO) << "[Host] Controller: All workers are ready. Initialization complete.";
-
-
     }// build ring
 
   } //explictit
@@ -295,15 +322,15 @@ class SocketSessionObj : public BcastSessionObj {
   }
 
   void Shutdown() final {
+
     if (shutdown_) return;
     shutdown_ = true;
 
     local_session_->Shutdown();
-    if (build_ring_) local_session_->CloseRing();
-    if (proxy_out_to_tcp_)  proxy_out_to_tcp_->Close();
-    if (proxy_in_from_tcp_) proxy_in_from_tcp_->Close();
-    if (tcp_in_ch_)        tcp_in_ch_->Close();
-    if (tcp_out_ch_)       tcp_out_ch_->Close();
+    if (build_ring_) {
+      local_session_->CloseRing();
+      ring_.Close();
+    }
 
     std::vector<AnyView> packed_args(2);
     ffi::PackedArgs::Fill(packed_args.data(), static_cast<int>(DiscoSocketAction::kShutdown), -1);
@@ -322,11 +349,9 @@ class SocketSessionObj : public BcastSessionObj {
       socket_.Close();
     }
     Socket::Finalize();
-
-    if (send_thread_.joinable()) send_thread_.join();
-    if (recv_thread_.joinable()) recv_thread_.join();
+    if (build_ring_) ring_.Join();
   }
-  
+
 
   ~SocketSessionObj() { Shutdown(); }
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("runtime.disco.SocketSession", SocketSessionObj,
@@ -341,12 +366,7 @@ class SocketSessionObj : public BcastSessionObj {
   bool build_ring_ = false;
 
   private:
-   std::unique_ptr<DiscoRingChannel> proxy_out_to_tcp_;
-   std::unique_ptr<DiscoRingChannel> proxy_in_from_tcp_;
-   std::unique_ptr<DiscoRingChannel> tcp_in_ch_;
-   std::unique_ptr<DiscoRingChannel> tcp_out_ch_;
-   std::thread send_thread_;
-   std::thread recv_thread_;
+   RingProxyEndpoint ring_;
 };
 
 class RemoteSocketSession {
@@ -388,10 +408,6 @@ class RemoteSocketSession {
       switch (action) {
         case DiscoSocketAction::kSend: {
           args = args.Slice(2);
-          // Recv() already auto-unwrapped any DiscoDebugObject back to a raw Tensor. Forwarding a
-          // raw Tensor to a local worker re-serializes it, and the message-queue protocol rejects
-          // kTVMFFITensor (kInvalidTypeCodeTensor). Re-wrap Tensors as DiscoDebugObject so they
-          // reach the worker, whose own Recv() unwraps them back to a Tensor.
           std::vector<ObjectRef> keep_alive;
           std::vector<AnyView> fwd(args.size());
           for (int i = 0; i < args.size(); ++i) {
@@ -412,9 +428,6 @@ class RemoteSocketSession {
         }
         case DiscoSocketAction::kReceive: {
           args = local_session_->RecvReplyPacked(local_worker_id);
-          // Symmetric to kSend: the worker's reply may carry a raw Tensor (e.g. the result of a
-          // debug_get_from_remote on this node's worker). Re-wrap before replying over the socket,
-          // or the protocol rejects kTVMFFITensor. The controller's Recv() unwraps it again.
           std::vector<ObjectRef> keep_alive;
           std::vector<AnyView> fwd(args.size());
           for (int i = 0; i < args.size(); ++i) {
@@ -429,12 +442,15 @@ class RemoteSocketSession {
           break;
         }
         case DiscoSocketAction::kShutdown: {
+          LOG(INFO) << "[Remote] node_id=" << node_id_ << " recv controller cmd kShutdown";
           local_session_->Shutdown();
-          LOG(INFO) << "Connection closed by remote controller.";
+          LOG(INFO) << "[Remote] node_id=" << node_id_
+                    << " connection closed by controller, shutting down.";
           return;
         }
         default:
-          LOG(FATAL) << "Invalid action " << static_cast<int>(action);
+          LOG(FATAL) << "[Remote] node_id=" << node_id_ << " invalid action "
+                     << static_cast<int>(action);
       }
     }
   }
@@ -442,15 +458,12 @@ class RemoteSocketSession {
   ~RemoteSocketSession() {
     if (local_session_.defined()) {
       local_session_->Shutdown();
-      if (build_ring) local_session_->CloseRing();
+      if (build_ring) {
+        local_session_->CloseRing();
+        ring_.Close();
+        ring_.Join();
+      }
     }
-    if (proxy_out_to_tcp_)        proxy_out_to_tcp_->Close();
-    if (proxy_in_from_tcp_)       proxy_in_from_tcp_->Close();
-    if (tcp_in_ch_)               tcp_in_ch_->Close();
-    if (tcp_out_ch_)              tcp_out_ch_->Close();
-    if (send_thread_.joinable()) send_thread_.join();
-    if (recv_thread_.joinable()) recv_thread_.join();
-
     if (!socket_.IsClosed()) socket_.Close();
     Socket::Finalize();
 
@@ -468,7 +481,7 @@ class RemoteSocketSession {
                                num_workers_per_node_);
 
     if( build_ring && num_nodes_ > 1)  {
-      
+      // The controller broadcasts base_ring_port + the IP table on our control channel.
       ffi::PackedArgs host_info = channel_->Recv();
       const int nNodes = host_info.size() - 1;
       const int base_ring_port = host_info[0].cast<int>();
@@ -476,65 +489,8 @@ class RemoteSocketSession {
       node_hosts.reserve(nNodes);
       for (int i = 0; i < nNodes; ++i) node_hosts.push_back(host_info[1 + i].cast<ffi::String>());
 
-
-      const int next_node_id   = (node_id_ + 1) % nNodes;
-      const int recv_port      = base_ring_port + node_id_;
-      const int send_port      = base_ring_port + next_node_id;
-
-      LOG(INFO) << "[Remote] remote node_id=" << node_id_ << " listen=:" << recv_port
-            << " connect_to=" << node_hosts[next_node_id].c_str() << ":" << send_port;
-
-
-      TCPSocket recv_sock;
-      std::thread accept_thread([this, recv_port, &recv_sock]() {
-              TCPSocket listen_sock;
-              listen_sock.Create();
-              listen_sock.SetKeepAlive(true);
-              listen_sock.Bind(SockAddr("0.0.0.0", recv_port));
-              listen_sock.Listen();
-              SockAddr tmp_addr;
-              recv_sock = listen_sock.Accept(&tmp_addr);
-              LOG(INFO) << "[Remote] Recv from " << tmp_addr.AsString();
-              listen_sock.Close();
-       });
-
-      TCPSocket send_sock;
-      send_sock.Create();
-      send_sock.SetKeepAlive(true);
-      bool ok = false;
-      for (int i = 0; i < 100; ++i) {
-           if (send_sock.Connect(SockAddr(node_hosts[next_node_id].c_str(), send_port))) { ok = true; break; }
-           std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      }
-      ICHECK(ok);
-      LOG(INFO) << "[Remote] node_id=" << node_id_ << " outbound connected to " << node_hosts[next_node_id].c_str() << ":" << send_port;
-      accept_thread.join();
-      LOG(INFO) << "[Remote] node_id=" << node_id_ << " ring TCP ready";
-
-
-      tcp_in_ch_  = std::make_unique<DiscoRingChannel>(recv_sock.sockfd);
-      recv_sock.sockfd = Socket::INVALID_SOCKET;
-      tcp_out_ch_ = std::make_unique<DiscoRingChannel>(send_sock.sockfd);
-      send_sock.sockfd = Socket::INVALID_SOCKET;
-
-  
-      // 0:read 1:write
-      int sess_fds[2];
-      ICHECK_EQ(::pipe(sess_fds), 0);
-
-      proxy_out_to_tcp_= local_session_->RerouteRingIn(std::make_unique<DiscoRingChannel>(sess_fds[0]));
-      ICHECK(proxy_out_to_tcp_);
-
-      proxy_in_from_tcp_= std::make_unique<DiscoRingChannel>(sess_fds[1]);
-
- 
-
-  
-      const std::string tag_prefix = "node_" + std::to_string(node_id_);
-      send_thread_ = std::thread(ProxyLoop, proxy_out_to_tcp_.get(), tcp_out_ch_.get(),tag_prefix + "-send");
-      recv_thread_ = std::thread(ProxyLoop, tcp_in_ch_.get(), proxy_in_from_tcp_.get(),tag_prefix + "-recv");
-      LOG(INFO) << "[Proxy] " << tag_prefix << ": send/recv threads started";
-        
+      ring_.Connect(node_id_, nNodes, base_ring_port, node_hosts, local_session_,
+                    "node_" + std::to_string(node_id_));
     }//build ring
   }
 
@@ -547,19 +503,20 @@ class RemoteSocketSession {
   int num_workers_per_node_{-1};
   bool build_ring = false;
 
-
-  std::unique_ptr<DiscoRingChannel> proxy_out_to_tcp_;
-  std::unique_ptr<DiscoRingChannel> proxy_in_from_tcp_;
-  std::unique_ptr<DiscoRingChannel> tcp_in_ch_;
-  std::unique_ptr<DiscoRingChannel> tcp_out_ch_;
-  std::thread send_thread_;
-  std::thread recv_thread_;
+  RingProxyEndpoint ring_;
 };
 
 void RemoteSocketSessionEntryPoint(const ffi::String& server_host, int server_port,
                                    int num_local_workers) {
-  RemoteSocketSession proxy(server_host, server_port, num_local_workers);
-  proxy.MainLoop();
+  try {
+    RemoteSocketSession proxy(server_host, server_port, num_local_workers);
+    proxy.MainLoop();
+    LOG(INFO) << "[Remote] " << server_host << ":" << server_port
+              << " main loop exited cleanly, process ending.";
+  } catch (const std::exception& e) {
+    LOG(INFO) << "[Remote] node exiting due to exception (controller lost?): " << e.what();
+    throw;  // preserve the non-zero exit; change to `return;` to exit quietly instead.
+  }
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
@@ -574,8 +531,6 @@ Session SocketSession(int num_nodes, int num_workers_per_node, int num_groups,
       ffi::make_object<SocketSessionObj>(num_nodes, num_workers_per_node, num_groups, host, port, build_ring);
   return Session(n);
 }
-
-
 
 
 TVM_FFI_STATIC_INIT_BLOCK() {
