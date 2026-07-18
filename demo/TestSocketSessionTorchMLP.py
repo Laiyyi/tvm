@@ -105,15 +105,19 @@ args = parser.parse_args()
 
 num_workers = args.num_nodes * args.num_workers_per_node
 devices = list(range(num_workers))
+print(f"---- Now Create SocketSession ---- ")
 sess = disco.SocketSession(args.num_nodes, args.num_workers_per_node, args.num_groups,
                            args.host, args.port, args.build_ring)
+
+print(f"---- Now Cpuccl start to initial ---- ")
 sess.init_ccl("cpuccl", *devices)
 
+print(f"---- Preparing dev/target/mod ---- ")
 dev = tvm.cpu(0)
 target = tvm.target.Target("llvm")
-
 mod = rx.get_pipeline("zero")(Attention)
 
+print(f"---- Preparing data---- ")
 X = np.random.randn(1, 10, 128).astype("float32")
 Wq = np.random.randn(128, 512).astype("float32")
 Wk = np.random.randn(128, 512).astype("float32")
@@ -128,14 +132,21 @@ Y_expected = VirtualMachine(tvm.compile(mod, target=target), device=dev)["main"]
     ).numpy()
 
 
-
+print(f"---- Preparing path and Shardmod---- ")
 path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test.so")
 Shardmod = rx.get_pipeline("zero")(ShardedAttention)
 
-
+print(f"---- Exporting ---- ")
 tvm.compile(Shardmod, target=target).export_library(path)
+print(f"---- Path:{path} ---- ")
 
+
+
+
+sess.upload_vm_module(path)
+print(f"---- upload done---- ")
 Shardmod = sess.load_vm_module(path)
+print(f"---- load done---- ")
 
 d_X = sess.empty((1, 10, 128), "float32")
 d_Wq = sess.empty((128, 256), "float32")

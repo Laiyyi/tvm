@@ -308,6 +308,30 @@ class Session(Object):
         """
         func = self._get_cached_method("runtime.disco.load_vm_module")
         return DModule(func(path, device), self)
+    
+    def upload_vm_module(self, path: str) -> str:
+        """Broadcast a module file to every worker and write it locally on each.
+
+        This reads the file on the controller and broadcasts its bytes over the session,
+        so each worker writes its own copy at `path` (parent directories are created as needed).
+        No shared filesystem or scp is required.
+
+        Parameters
+        ----------
+        path : str
+            The path of the module file.  It is read locally on the controller and written to the
+            same path on every worker; pass this same path to `load_vm_module`.
+
+        Returns
+        -------
+        path : str
+            The path written on every worker (identical to the argument), for chaining into
+            `load_vm_module`.
+        """
+        with open(path, "rb") as f:
+            blob = bytearray(f.read())
+        self.get_global_func("runtime.disco.upload_module")(blob, path)
+        return path
 
     def init_ccl(self, ccl: str, *device_ids):
         """Initialize the underlying communication collective library.
