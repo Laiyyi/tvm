@@ -98,7 +98,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--num-nodes", type=int, default=2)
 parser.add_argument("--num-workers-per-node", type=int, default=1)
 parser.add_argument("--num-groups", type=int, default=1)
-parser.add_argument("--host", default="127.0.0.1")
+parser.add_argument("--host", default="192.168.50.169")
 parser.add_argument("--port", type=int, default=18000)
 parser.add_argument("--build-ring", type=lambda s: s.lower() in ("1", "true", "yes"), default=True)
 args = parser.parse_args()
@@ -132,21 +132,6 @@ Y_expected = VirtualMachine(tvm.compile(mod, target=target), device=dev)["main"]
     ).numpy()
 
 
-print(f"---- Preparing path and Shardmod---- ")
-path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test.so")
-Shardmod = rx.get_pipeline("zero")(ShardedAttention)
-
-print(f"---- Exporting ---- ")
-tvm.compile(Shardmod, target=target).export_library(path)
-print(f"---- Path:{path} ---- ")
-
-
-
-
-sess.upload_vm_module(path)
-print(f"---- upload done---- ")
-Shardmod = sess.load_vm_module(path)
-print(f"---- load done---- ")
 
 d_X = sess.empty((1, 10, 128), "float32")
 d_Wq = sess.empty((128, 256), "float32")
@@ -164,10 +149,36 @@ d_Wv.debug_copy_from(1, Wv[:, 256:])
 d_Wo.debug_copy_from(0, Wo[:256, :])
 d_Wo.debug_copy_from(1, Wo[256:, :])
 
+
+
+print(f"---- Preparing path and Shardmod---- ")
+path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test.so")
+Shardmod = rx.get_pipeline("zero")(ShardedAttention)
+
+print(f"---- Exporting ---- ")
+tvm.compile(Shardmod, target=target).export_library(path)
+print(f"---- Path:{path} ---- ")
+
+
+sess.upload_vm_module(path)
+sess._sync_all() 
+
+print(f"---- upload done---- ")
+Shardmod = sess.load_vm_module(path)
+print(f"---- load done---- ")
+sess._sync_all() 
+
+
+
+print(f"---- Main Start ---- ")
 d_Y = Shardmod["main"](d_X, d_Wq, d_Wk, d_Wv, d_Wo)
 Y_result = tvm.runtime.empty((1, 10, 128), "float32", device=dev)
 sess.copy_from_worker_0(Y_result, d_Y)
+print(f"---- Sync0 Start ---- ")
 sess.sync_worker_0()
 Y_result = Y_result.numpy()
     # pylint: enable=invalid-name
 np.testing.assert_allclose(Y_result, Y_expected, rtol=1e-3, atol=1e-3)
+print(f"---- shutdown ---- ")
+sess._sync_all() 
+sess.shutdown() 
