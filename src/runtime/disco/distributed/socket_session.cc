@@ -93,7 +93,7 @@ class RingProxyEndpoint {
 
     // Inbound: accept the previous node's connection on our recv_port.
     TCPSocket recv_sock;
-    std::thread accept_thread([recv_port, &recv_sock, &tag]() {
+    std::thread accept_thread([recv_port, &recv_sock, &tag, &node_hosts, node_id]() {
       TCPSocket listen_sock;
       listen_sock.Create();
       listen_sock.SetKeepAlive(true);
