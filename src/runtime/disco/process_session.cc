@@ -25,8 +25,10 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include <sstream>
 
 #include "../../support/pipe.h"
+#include "../minrpc/rpc_reference.h"
 #include "./bcast_session.h"
 #include "./disco_worker_thread.h"
 #include "./message_queue.h"

@@ -112,19 +112,12 @@ class BcastSessionObj : public SessionObj {
   int reg_count_ = 1;
   /*! \brief The regsiter ids that have been deallocated */
   std::vector<int64_t> free_regs_;
-  /*!
-   * \brief Set once Shutdown() has run. After shutdown the workers are gone, so DeallocReg()
-   * must not broadcast kKillReg to their (now closed) pipes, which would raise SIGPIPE. This
-   * matters because a DRef may outlive the session and only be garbage-collected later.
-   */
   bool shutdown_ = false;
 
   struct Internal;
   friend struct Internal;
   friend class SocketSessionObj;
   friend class RemoteSocketSession;
-  // RingProxyEndpoint wires the cross-node ring for both controller and remote; it calls the
-  // protected RerouteRingIn hook on the local session.
   friend class RingProxyEndpoint;
 
 };

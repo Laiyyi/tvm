@@ -379,9 +379,6 @@ if(USE_CUDA AND USE_NCCL)
   list(APPEND RUNTIME_SRCS ${RUNTIME_NCCL_SRC})
 endif()
 
-
-
-
 if (USE_CUDA AND USE_NVSHMEM)
   message(STATUS "Build with NVSHMEM...")
   find_nvshmem(${USE_NVSHMEM})
@@ -808,8 +805,6 @@ if(USE_CUDA AND USE_NCCL)
   target_link_libraries(tvm PRIVATE nccl ${LIBRT})
   target_link_libraries(tvm_runtime PRIVATE nccl ${LIBRT})
 endif()
-
-
 
 if (USE_CUDA AND USE_NVSHMEM)
   target_include_directories(tvm_runtime_objs PUBLIC ${NVSHMEM_INCLUDE_DIR})
