@@ -97,7 +97,7 @@ class RingProxyEndpoint {
       TCPSocket listen_sock;
       listen_sock.Create();
       listen_sock.SetKeepAlive(true);
-      listen_sock.Bind(SockAddr("0.0.0.0", recv_port));
+      listen_sock.Bind(SockAddr(node_hosts[node_id].c_str(), recv_port));
       listen_sock.Listen();
       SockAddr tmp_addr;
       recv_sock = listen_sock.Accept(&tmp_addr);
