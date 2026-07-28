@@ -212,8 +212,9 @@ class SocketSessionObj : public BcastSessionObj {
         node_hosts_.push_back(ip);
         LOG(INFO) << "[Host] IP table : node " << (i + 1) << " ip=" << ip.c_str(); 
       }
+    }
 
-      if( build_ring_ && num_nodes_ > 1) {
+    if( build_ring_ && num_nodes_ > 1) {
 
         const int base_ring_port = port + 1;
 
@@ -227,14 +228,12 @@ class SocketSessionObj : public BcastSessionObj {
           }
           LOG(INFO) << "[Host] IP and port broadcast completed.";
         }
-
         ring_.Connect(/*node_id=*/0, num_nodes_, base_ring_port, node_hosts_, local_session_,"controller");
 
         const int num_workers = num_nodes_ * num_workers_per_node_;
         for (int worker_id = 1; worker_id < num_workers; ++worker_id) { this->SyncWorker(worker_id); }
         LOG(INFO) << "[Host] Controller: All workers are ready. Initialization complete.";
       }// build ring
-    }
   }
 
   int64_t GetNumWorkers() final { return num_nodes_ * num_workers_per_node_; }
