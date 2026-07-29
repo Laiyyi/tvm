@@ -19,6 +19,7 @@
 """Base library for TVM."""
 
 import os
+from pathlib import Path
 
 from tvm_ffi.libinfo import load_lib_ctypes
 
@@ -44,6 +45,20 @@ _LOADED_LIBS = {}
 _LOADED_LIBS["tvm_runtime"] = load_lib_ctypes(
     "tvm", "tvm_runtime", "RTLD_GLOBAL", extra_lib_paths=libinfo.package_lib_paths()
 )
+
+try:
+    _LOADED_LIBS["tvm_runtime_extra"] = load_lib_ctypes(
+        "tvm",
+        "tvm_runtime_extra",
+        "RTLD_LOCAL",
+        extra_lib_paths=[
+            *libinfo.package_lib_paths(),
+            Path(_LOADED_LIBS["tvm_runtime"]._name).resolve().parent,
+        ],
+    )
+except (RuntimeError, OSError, FileNotFoundError):
+    # Absent in runtime-only / trimmed builds; the disco bindings then stay unavailable.
+    pass
 
 if not _RUNTIME_ONLY:
     try:
