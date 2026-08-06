@@ -68,7 +68,8 @@ void CollectAxisGraphUnary(const VarBindingNode* binding, const CallNode* call,
       "square", "sqrt",     "tan",
       "tanh",   "clip",     "isfinite",
       "isinf",  "isnan",    "dist.annotate_sharding",
-      "erf",    "nn.gelu",  "builtin.stop_lift_params"};
+      "erf",    "nn.gelu",  "builtin.stop_lift_params",
+      "astype" };
   for (const auto& op_name : unary_op_names) {
     const Op& unary_op = Op::Get("relax." + op_name);
     if (call->op.same_as(unary_op)) {
