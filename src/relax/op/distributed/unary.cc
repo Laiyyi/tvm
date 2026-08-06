@@ -19,6 +19,8 @@
 
 #include "unary.h"
 
+#include <tvm/relax/attrs/datatype.h>
+
 namespace tvm {
 namespace relax {
 namespace distributed {
@@ -26,6 +28,13 @@ namespace distributed {
 Type InferDistTypeUnaryCheck(const Call& call, const BlockBuilder& ctx) {
   return InferDistTypeUnary<false>(call, ctx,
                                    [](const TensorType& input_ty) { return PrimType::Bool(); });
+}
+
+Type InferDistTypeAstype(const Call& call, const BlockBuilder& ctx) {
+  const auto* attrs = call->attrs.as<AstypeAttrs>();
+  TVM_FFI_ICHECK(attrs);
+  return InferDistTypeUnary<false>(
+      call, ctx, [attrs](const TensorType& input_ty) { return PrimType(attrs->dtype); });
 }
 
 RELAX_REGISTER_UNARY_ARITH_DIST_INFER_TYPE(abs, /*require_float_dtype=*/false);
@@ -59,6 +68,8 @@ RELAX_REGISTER_UNARY_ARITH_DIST_INFER_TYPE(erf, /*require_float_dtype=*/true);
 RELAX_REGISTER_UNARY_CHECK_DIST_INFER_TYPE(isfinite);
 RELAX_REGISTER_UNARY_CHECK_DIST_INFER_TYPE(isinf);
 RELAX_REGISTER_UNARY_CHECK_DIST_INFER_TYPE(isnan);
+
+RELAX_REGISTER_UNARY_AS_TYPE_DIST_INFER_TYPE(astype);
 
 }  // namespace distributed
 }  // namespace relax
