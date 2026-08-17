@@ -477,6 +477,8 @@ void BuildAxisGraphReshape(const Var& output_var, const Call& call,
                            distributed::AxisGroupGraph* axis_group_graph);
 void BuildAxisGraphCallTIR(const Var& output_var, const Call& call, const tirx::PrimFunc& func,
                            distributed::AxisGroupGraph* axis_group_graph);
+void BuildAxisGraphTake(const Var& output_var, const Call& call,
+                        distributed::AxisGroupGraph* axis_group_graph);
 
 }  // namespace distributed
 }  // namespace relax

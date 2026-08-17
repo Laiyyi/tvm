@@ -115,6 +115,14 @@ void CollectAxisGraphReshape(const VarBindingNode* binding, const CallNode* call
   }
 }
 
+void CollectAxisGraphTake(const VarBindingNode* binding, const CallNode* call,
+                          AxisGroupGraph* axis_group_graph) {
+  static const Op& take_op = Op::Get("relax.take");
+  if (call->op.same_as(take_op)) {
+    BuildAxisGraphTake(binding->var, ffi::GetRef<Call>(call), axis_group_graph);
+  }
+}
+
 void CollectAxisGraphForDeviceMesh(const VarBindingNode* binding, const CallNode* call,
                                    AxisGroupGraph* axis_group_graph) {
   ffi::Array<Expr> tensor_list;
@@ -158,6 +166,7 @@ class AxisGroupGraphBuilder : public ExprVisitor {
     CollectAxisGraphMatmul(binding, val, axis_group_graph_);
     CollectAxisGraphPermuteDims(binding, val, axis_group_graph_);
     CollectAxisGraphReshape(binding, val, axis_group_graph_);
+    CollectAxisGraphTake(binding, val, axis_group_graph_);
     static const Op& call_tir_op = Op::Get("relax.call_tir");
     if (val->op.same_as(call_tir_op)) {
       if (ffi::Optional<tirx::PrimFunc> func = MatchPrimFunc(mod_, val->args[0])) {

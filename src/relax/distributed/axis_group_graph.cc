@@ -19,6 +19,7 @@
 #include <tvm/ffi/cast.h>
 #include <tvm/relax/analysis.h>
 #include <tvm/relax/attrs/distributed.h>
+#include <tvm/relax/attrs/index.h>
 #include <tvm/relax/attrs/linear_algebra.h>
 #include <tvm/relax/attrs/manipulate.h>
 #include <tvm/relax/attrs/nn.h>
@@ -338,6 +339,37 @@ void BuildAxisGraphReshape(const Var& output_var, const Call& call,
       old_shape_product *= old_shape_values[i];
       new_shape_product *= new_shape_values[j];
     }
+  }
+}
+
+void BuildAxisGraphTake(const Var& output_var, const Call& call,
+                        distributed::AxisGroupGraph* axis_group_graph) {
+  Expr data = call->args[0];
+  Expr indices = call->args[1];
+  const auto* attrs = call->attrs.as<TakeAttrs>();
+  TVM_FFI_ICHECK(attrs);
+  int data_ndim = GetTensorType(data)->ndim;
+  int axis = attrs->axis.has_value() ? static_cast<int>(attrs->axis.value()) : 0;
+  if (axis < 0) {
+    axis += data_ndim;
+  }
+  TVM_FFI_ICHECK(axis >= 0 && axis < data_ndim);
+  int indices_ndim = 0;
+  if (indices->ty.as<TensorTypeNode>() || indices->ty.as<DTensorTypeNode>()) {
+    indices_ndim = GetTensorType(indices)->ndim;
+    for (int i = 0; i < indices_ndim; i++) {
+      axis_group_graph->JoinAxis({indices.get(), i}, {output_var.get(), axis + i},
+                                 distributed::AxisGroupGraph::EdgeType::kDescend);
+    }
+  }
+
+  for (int i = 0; i < data_ndim; i++) {
+    if (i == axis) {
+      continue;
+    }
+    axis_group_graph->JoinAxis({data.get(), i},
+                               {output_var.get(), i < axis ? i : i + indices_ndim - 1},
+                               distributed::AxisGroupGraph::EdgeType::kDescend);
   }
 }
 
