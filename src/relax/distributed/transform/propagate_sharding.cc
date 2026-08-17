@@ -557,6 +557,16 @@ class DistributedIRBuilder : public ExprMutator {
         new_call = Call(new_call_node);
         new_call->ty = new_call_node->ty_args[0];
       }
+    } else if (const auto* tensor_ty =
+                   call->ty.IsMissing() ? nullptr : call->ty.as<TensorTypeNode>()) {
+      // An op with no tensor argument at all (arange, zeros, ones, ...) never reaches distributed
+      // type inference: BlockBuilder only takes that path when some argument is a DTensor, so a
+      // dist.FInferType would be dead code. Reaching here with a plain TensorType means inference
+      // never ran, so attach the propagated type by hand.
+      TVM_FFI_ICHECK(placements.size() == 1);
+      ffi::ObjectPtr<CallNode> new_call_node = ffi::make_object<CallNode>(*call.get());
+      new_call = Call(new_call_node);
+      new_call->ty = DTensorType(ffi::GetRef<TensorType>(tensor_ty), device_mesh, placements[0]);
     }
     return new_call;
   }
