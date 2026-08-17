@@ -136,6 +136,15 @@ void CollectAxisGraphForDeviceMesh(const VarBindingNode* binding, const CallNode
   for (const auto& arg : args) {
     if (arg->ty.as<TensorTypeNode>()) {
       tensor_list.push_back(arg);
+    } else if (const auto* tuple = arg.as<TupleNode>()) {
+      // Ops such as index_tensor take some of their tensor inputs inside a tuple. The device mesh
+      // has to reach those fields as well, otherwise a subgraph that feeds nothing but a tuple ends
+      // up with no device mesh at all.
+      for (const auto& field : tuple->fields) {
+        if (field->ty.as<TensorTypeNode>()) {
+          tensor_list.push_back(field);
+        }
+      }
     }
   }
   for (int i = 0; i < static_cast<int>(tensor_list.size()); i++) {
