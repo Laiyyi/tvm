@@ -83,6 +83,38 @@ RELAX_REGISTER_STATISTICAL_DIST_INFER_TYPE(std);
 RELAX_REGISTER_STATISTICAL_DIST_INFER_TYPE(sum);
 RELAX_REGISTER_STATISTICAL_DIST_INFER_TYPE(variance);
 
+Type InferDistTypeScan(const Call& call, const BlockBuilder& ctx) {
+  ffi::Array<distributed::DTensorType> input_dtensor_tys = GetInputDTensorType(call, ctx);
+  TVM_FFI_ICHECK(input_dtensor_tys.size() == 1);
+  TensorType data_ty = input_dtensor_tys[0]->tensor_ty;
+
+  const auto* attrs = call->attrs.as<ScanopAttrs>();
+  TVM_FFI_ICHECK(attrs);
+  ffi::Optional<PrimType> out_dtype = attrs->dtype.has_value()
+                                          ? ffi::Optional<PrimType>(PrimType(attrs->dtype.value()))
+                                          : data_ty->dtype;
+  const auto* data_shape = data_ty->shape.as<ShapeExprNode>();
+  if (data_shape == nullptr) {
+    TVM_FFI_VISIT_THROW(ValueError, call) << "Input of distributed operator must have known shape";
+  }
+
+  TensorType output_tensor_ty = TensorType(ShapeExpr(data_shape->values), out_dtype);
+  if (!attrs->axis.has_value()) {
+    // Without an axis the input is scanned as a flattened 1-D tensor.
+    PrimExpr flattened_d = 1;
+    for (const PrimExpr& v : data_shape->values) {
+      flattened_d *= v;
+    }
+    output_tensor_ty = TensorType(ShapeExpr(ffi::Array<PrimExpr>({flattened_d})), out_dtype);
+  } else {
+    NormalizeAxis(call, ctx, data_ty->ndim, attrs->axis.value());
+  }
+  return InferShardingSpec(call, ctx, output_tensor_ty, distributed::BuildAxisGraphScan);
+}
+
+TVM_REGISTER_OP("relax.cumsum").set_attr<FInferType>("dist.FInferType", InferDistTypeScan);
+TVM_REGISTER_OP("relax.cumprod").set_attr<FInferType>("dist.FInferType", InferDistTypeScan);
+
 }  // namespace distributed
 }  // namespace relax
 }  // namespace tvm
