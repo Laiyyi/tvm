@@ -373,6 +373,31 @@ void BuildAxisGraphTake(const Var& output_var, const Call& call,
   }
 }
 
+void BuildAxisGraphScan(const Var& output_var, const Call& call,
+                        distributed::AxisGroupGraph* axis_group_graph) {
+  Expr input_tensor = call->args[0];
+  const auto* attrs = call->attrs.as<ScanopAttrs>();
+  TVM_FFI_ICHECK(attrs);
+  if (!attrs->axis.has_value()) {
+    // The output is flattened, so no input axis corresponds to an output axis.
+    return;
+  }
+  int ndim = GetTensorType(input_tensor)->ndim;
+  int axis = static_cast<int>(attrs->axis.value());
+  if (axis < 0) {
+    axis += ndim;
+  }
+  TVM_FFI_ICHECK(axis >= 0 && axis < ndim);
+  // The scanned axis is left unjoined: a prefix scan along a sharded axis needs communication.
+  for (int i = 0; i < ndim; i++) {
+    if (i == axis) {
+      continue;
+    }
+    axis_group_graph->JoinAxis({input_tensor.get(), i}, {output_var.get(), i},
+                               distributed::AxisGroupGraph::EdgeType::kDescend);
+  }
+}
+
 inline int GetNumOutput(Call call) {
   Type output_ty = call->ty_args[0];
   if (const auto* tuple_ty = output_ty.as<TupleTypeNode>()) {

@@ -479,6 +479,8 @@ void BuildAxisGraphCallTIR(const Var& output_var, const Call& call, const tirx::
                            distributed::AxisGroupGraph* axis_group_graph);
 void BuildAxisGraphTake(const Var& output_var, const Call& call,
                         distributed::AxisGroupGraph* axis_group_graph);
+void BuildAxisGraphScan(const Var& output_var, const Call& call,
+                        distributed::AxisGroupGraph* axis_group_graph);
 
 }  // namespace distributed
 }  // namespace relax

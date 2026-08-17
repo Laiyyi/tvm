@@ -123,6 +123,18 @@ void CollectAxisGraphTake(const VarBindingNode* binding, const CallNode* call,
   }
 }
 
+void CollectAxisGraphScan(const VarBindingNode* binding, const CallNode* call,
+                          AxisGroupGraph* axis_group_graph) {
+  const std::vector<std::string> scan_op_names = {"cumsum", "cumprod"};
+  for (const auto& op_name : scan_op_names) {
+    const Op& scan_op = Op::Get("relax." + op_name);
+    if (call->op.same_as(scan_op)) {
+      BuildAxisGraphScan(binding->var, ffi::GetRef<Call>(call), axis_group_graph);
+      break;
+    }
+  }
+}
+
 void CollectAxisGraphForDeviceMesh(const VarBindingNode* binding, const CallNode* call,
                                    AxisGroupGraph* axis_group_graph) {
   ffi::Array<Expr> tensor_list;
@@ -176,6 +188,7 @@ class AxisGroupGraphBuilder : public ExprVisitor {
     CollectAxisGraphPermuteDims(binding, val, axis_group_graph_);
     CollectAxisGraphReshape(binding, val, axis_group_graph_);
     CollectAxisGraphTake(binding, val, axis_group_graph_);
+    CollectAxisGraphScan(binding, val, axis_group_graph_);
     static const Op& call_tir_op = Op::Get("relax.call_tir");
     if (val->op.same_as(call_tir_op)) {
       if (ffi::Optional<tirx::PrimFunc> func = MatchPrimFunc(mod_, val->args[0])) {

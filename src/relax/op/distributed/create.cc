@@ -46,9 +46,6 @@ Type InferDistTypeFull(const Call& call, const BlockBuilder& ctx) {
                                           ? ffi::Optional<PrimType>(PrimType(attrs->dtype.value()))
                                           : fill_value_ty->tensor_ty->dtype;
 
-  // The shape comes from an argument rather than from a distributed input, so there is no input
-  // axis for the output to inherit a sharding from: the output is replicated, and a sharded
-  // consumer gets a redistribute inserted for it.
   const DeviceMesh& device_mesh = fill_value_ty->device_mesh;
   ffi::Array<PlacementSpec> placement_specs(
       std::vector<PlacementSpec>(device_mesh->shape.size(), PlacementSpec::Replica()));
