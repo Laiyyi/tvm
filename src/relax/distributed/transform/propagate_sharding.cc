@@ -454,9 +454,11 @@ class DistributedIRBuilder : public ExprMutator {
     };
     Call new_call = ExprMutator::VisitExpr_(call).as_or_throw<Call>();
     ffi::Array<Expr> args = GetCallArgs(new_call);
+    bool args_rewritten = false;
     for (int i = 0; i < static_cast<int>(args.size()); i++) {
       if (args[i].as<ConstantNode>()) {
         args.Set(i, RewriteInputTensorAndConstant(args[i]));
+        args_rewritten = true;
       }
     }
 
@@ -468,6 +470,12 @@ class DistributedIRBuilder : public ExprMutator {
         n->ty_args = {InferShardingSpec(Call(n), this->builder_, new_call->ty_args[0], f)};
       }
     } else {
+      // Rewriting constants here bypasses the type invalidation ExprMutatorBase does when it
+      // rebuilds a call, so drop the now-stale type ourselves. Without this, a call whose only
+      // tensor arguments are constants keeps its non-distributed type and never gets re-inferred.
+      if (args_rewritten) {
+        n->ty = Type::Missing();
+      }
       n->args = args;
     }
 
