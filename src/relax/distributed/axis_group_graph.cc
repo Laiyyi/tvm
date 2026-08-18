@@ -456,6 +456,30 @@ void BuildAxisGraphBroadcastTo(const Var& output_var, const Call& call,
   BroadcastJoinHelper(call->args[0], output_var, tgt_shape_ty->values.value(), axis_group_graph);
 }
 
+void BuildAxisGraphLayerNorm(const Var& output_var, const Call& call,
+                             distributed::AxisGroupGraph* axis_group_graph) {
+  Expr input_tensor = call->args[0];
+  const auto* attrs = call->attrs.as<LayerNormAttrs>();
+  TVM_FFI_ICHECK(attrs);
+  int ndim = GetTensorType(input_tensor)->ndim;
+  std::unordered_set<int> normalized_axes;
+  for (int64_t i : attrs->axes) {
+    int val = static_cast<int>(i);
+    TVM_FFI_ICHECK(val < ndim && val >= -ndim);
+    normalized_axes.insert(val < 0 ? val + ndim : val);
+  }
+  // gamma and beta only span the normalized axes, and those axes must stay replicated because the
+  // mean/variance reduction over them would otherwise need communication. So they get no edges and
+  // only the untouched data axes are joined.
+  for (int i = 0; i < ndim; i++) {
+    if (normalized_axes.count(i)) {
+      continue;
+    }
+    axis_group_graph->JoinAxis({input_tensor.get(), i}, {output_var.get(), i},
+                               distributed::AxisGroupGraph::EdgeType::kDescend);
+  }
+}
+
 void BuildAxisGraphWhere(const Var& output_var, const Call& call,
                          distributed::AxisGroupGraph* axis_group_graph) {
   const auto* out_shape = GetTensorType(output_var)->shape.as<ShapeExprNode>();
