@@ -43,9 +43,14 @@ namespace distributed {
 
 void CollectAxisGraphBinary(const VarBindingNode* binding, const CallNode* call,
                             AxisGroupGraph* axis_group_graph) {
+  // Must mirror the ops registered in op/distributed/binary.cc: they all infer their distributed
+  // type through BuildAxisGraphBinary, so leaving one out here silently stops sharding at it.
   const std::vector<std::string> binary_op_names = {
-      "add",     "subtract",      "multiply", "divide",     "power",     "floor_divide", "equal",
-      "greater", "greater_equal", "less",     "less_equal", "not_equal", "minimum",      "maximum"};
+      "add",         "subtract",    "multiply",      "divide",      "power",
+      "floor_divide", "mod",        "floor_mod",     "equal",       "greater",
+      "greater_equal", "less",      "less_equal",    "not_equal",   "minimum",
+      "maximum",     "logical_and", "logical_or",    "logical_xor", "bitwise_and",
+      "bitwise_or",  "bitwise_xor", "left_shift",    "right_shift"};
   for (const auto& op_name : binary_op_names) {
     const Op& binary_op = Op::Get("relax." + op_name);
     if (call->op.same_as(binary_op)) {
@@ -69,7 +74,8 @@ void CollectAxisGraphUnary(const VarBindingNode* binding, const CallNode* call,
       "tanh",   "clip",     "isfinite",
       "isinf",  "isnan",    "dist.annotate_sharding",
       "erf",    "nn.gelu",  "builtin.stop_lift_params",
-      "astype" };
+      "astype", "bitwise_not", "logical_not",
+      "nn.gelu_tanh", "nn.silu"};
   for (const auto& op_name : unary_op_names) {
     const Op& unary_op = Op::Get("relax." + op_name);
     if (call->op.same_as(unary_op)) {
