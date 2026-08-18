@@ -33,6 +33,8 @@ namespace distributed {
 
 Type InferDistTypeSoftmax(const Call& call, const BlockBuilder& ctx);
 
+Type InferDistTypeLayerNorm(const Call& call, const BlockBuilder& ctx);
+
 }  // namespace distributed
 }  // namespace relax
 }  // namespace tvm
