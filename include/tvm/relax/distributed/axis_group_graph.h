@@ -487,6 +487,8 @@ void BuildAxisGraphIndexTensor(const Var& output_var, const Call& call,
                                distributed::AxisGroupGraph* axis_group_graph);
 void BuildAxisGraphBroadcastTo(const Var& output_var, const Call& call,
                                distributed::AxisGroupGraph* axis_group_graph);
+void BuildAxisGraphWhere(const Var& output_var, const Call& call,
+                         distributed::AxisGroupGraph* axis_group_graph);
 
 }  // namespace distributed
 }  // namespace relax
