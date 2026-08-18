@@ -456,6 +456,18 @@ void BuildAxisGraphBroadcastTo(const Var& output_var, const Call& call,
   BroadcastJoinHelper(call->args[0], output_var, tgt_shape_ty->values.value(), axis_group_graph);
 }
 
+void BuildAxisGraphWhere(const Var& output_var, const Call& call,
+                         distributed::AxisGroupGraph* axis_group_graph) {
+  const auto* out_shape = GetTensorType(output_var)->shape.as<ShapeExprNode>();
+  if (out_shape == nullptr) {
+    return;
+  }
+  // condition, x1 and x2 all broadcast against the output.
+  for (const Expr& arg : call->args) {
+    BroadcastJoinHelper(arg, output_var, out_shape->values, axis_group_graph);
+  }
+}
+
 void BuildAxisGraphIndexTensor(const Var& output_var, const Call& call,
                                distributed::AxisGroupGraph* axis_group_graph) {
   Expr data = call->args[0];

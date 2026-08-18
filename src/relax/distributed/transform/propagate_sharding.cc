@@ -159,6 +159,14 @@ void CollectAxisGraphBroadcastTo(const VarBindingNode* binding, const CallNode* 
   }
 }
 
+void CollectAxisGraphWhere(const VarBindingNode* binding, const CallNode* call,
+                           AxisGroupGraph* axis_group_graph) {
+  static const Op& where_op = Op::Get("relax.where");
+  if (call->op.same_as(where_op)) {
+    BuildAxisGraphWhere(binding->var, ffi::GetRef<Call>(call), axis_group_graph);
+  }
+}
+
 void CollectAxisGraphForDeviceMesh(const VarBindingNode* binding, const CallNode* call,
                                    AxisGroupGraph* axis_group_graph) {
   ffi::Array<Expr> tensor_list;
@@ -216,6 +224,7 @@ class AxisGroupGraphBuilder : public ExprVisitor {
     CollectAxisGraphExpandDims(binding, val, axis_group_graph_);
     CollectAxisGraphIndexTensor(binding, val, axis_group_graph_);
     CollectAxisGraphBroadcastTo(binding, val, axis_group_graph_);
+    CollectAxisGraphWhere(binding, val, axis_group_graph_);
     static const Op& call_tir_op = Op::Get("relax.call_tir");
     if (val->op.same_as(call_tir_op)) {
       if (ffi::Optional<tirx::PrimFunc> func = MatchPrimFunc(mod_, val->args[0])) {
