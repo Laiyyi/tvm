@@ -447,6 +447,15 @@ void BroadcastJoinHelper(const Expr& input_tensor, const Var& output_var,
   }
 }
 
+void BuildAxisGraphBroadcastTo(const Var& output_var, const Call& call,
+                               distributed::AxisGroupGraph* axis_group_graph) {
+  const auto* tgt_shape_ty = GetTypeAs<ShapeTypeNode>(call->args[1]);
+  if (tgt_shape_ty == nullptr || !tgt_shape_ty->values.has_value()) {
+    return;
+  }
+  BroadcastJoinHelper(call->args[0], output_var, tgt_shape_ty->values.value(), axis_group_graph);
+}
+
 void BuildAxisGraphIndexTensor(const Var& output_var, const Call& call,
                                distributed::AxisGroupGraph* axis_group_graph) {
   Expr data = call->args[0];
