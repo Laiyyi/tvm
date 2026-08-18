@@ -420,6 +420,62 @@ void BuildAxisGraphExpandDims(const Var& output_var, const Call& call,
   }
 }
 
+/*!
+ * \brief Join the axes of a tail-aligned broadcast input to the output axes. An input axis that
+ * gets stretched (its extent differs from the output extent) is skipped: it holds a single element
+ * replicated along the output axis, so it cannot carry that axis' sharding.
+ */
+void BroadcastJoinHelper(const Expr& input_tensor, const Var& output_var,
+                         const ffi::Array<PrimExpr>& out_shape,
+                         distributed::AxisGroupGraph* axis_group_graph) {
+  const auto* input_ty = GetTensorType(input_tensor);
+  const auto* input_shape = input_ty->shape.as<ShapeExprNode>();
+  if (input_shape == nullptr) {
+    return;
+  }
+  int in_ndim = input_ty->ndim;
+  int out_ndim = out_shape.size();
+  TVM_FFI_ICHECK(in_ndim <= out_ndim);
+  arith::Analyzer analyzer;
+  for (int i = 0; i < in_ndim; i++) {
+    int out_dim = out_ndim - in_ndim + i;
+    if (!analyzer->CanProveEqual(input_shape->values[i], out_shape[out_dim])) {
+      continue;
+    }
+    axis_group_graph->JoinAxis({input_tensor.get(), i}, {output_var.get(), out_dim},
+                               distributed::AxisGroupGraph::EdgeType::kDescend);
+  }
+}
+
+void BuildAxisGraphIndexTensor(const Var& output_var, const Call& call,
+                               distributed::AxisGroupGraph* axis_group_graph) {
+  Expr data = call->args[0];
+  const auto* indices = call->args[1].as<TupleNode>();
+  if (indices == nullptr) {
+    return;
+  }
+  const auto* out_ty = GetTensorType(output_var);
+  const auto* out_shape = out_ty->shape.as<ShapeExprNode>();
+  if (out_shape == nullptr) {
+    return;
+  }
+  int n_indices = indices->fields.size();
+  int data_ndim = GetTensorType(data)->ndim;
+  // The index tensors broadcast against each other into the leading output axes; the data axes they
+  // index are gathered away, and the remaining data axes follow behind.
+  int bcast_ndim = out_ty->ndim - (data_ndim - n_indices);
+  TVM_FFI_ICHECK(bcast_ndim >= 0);
+  ffi::Array<PrimExpr> bcast_shape{out_shape->values.begin(),
+                                   out_shape->values.begin() + bcast_ndim};
+  for (const Expr& index : indices->fields) {
+    BroadcastJoinHelper(index, output_var, bcast_shape, axis_group_graph);
+  }
+  for (int i = n_indices; i < data_ndim; i++) {
+    axis_group_graph->JoinAxis({data.get(), i}, {output_var.get(), bcast_ndim + i - n_indices},
+                               distributed::AxisGroupGraph::EdgeType::kDescend);
+  }
+}
+
 inline int GetNumOutput(Call call) {
   Type output_ty = call->ty_args[0];
   if (const auto* tuple_ty = output_ty.as<TupleTypeNode>()) {
