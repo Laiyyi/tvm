@@ -18,25 +18,22 @@
  */
 
 /*!
- * \file nn.h
- * \brief The functions to infer type for distributed nn operator
+ * \file search.h
+ * \brief The functions to infer type for distributed search operator
  */
 
-#ifndef TVM_RELAX_OP_DISTRIBUTED_NN_H_
-#define TVM_RELAX_OP_DISTRIBUTED_NN_H_
+#ifndef TVM_RELAX_OP_DISTRIBUTED_SEARCH_H_
+#define TVM_RELAX_OP_DISTRIBUTED_SEARCH_H_
 
-#include "unary.h"
 #include "utils.h"
 namespace tvm {
 namespace relax {
 namespace distributed {
 
-Type InferDistTypeSoftmax(const Call& call, const BlockBuilder& ctx);
-
-Type InferDistTypeLayerNorm(const Call& call, const BlockBuilder& ctx);
+Type InferDistTypeWhere(const Call& call, const BlockBuilder& ctx);
 
 }  // namespace distributed
 }  // namespace relax
 }  // namespace tvm
 
-#endif  // TVM_RELAX_OP_DISTRIBUTED_NN_H_
+#endif  // TVM_RELAX_OP_DISTRIBUTED_SEARCH_H_

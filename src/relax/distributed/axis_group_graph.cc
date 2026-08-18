@@ -19,6 +19,7 @@
 #include <tvm/ffi/cast.h>
 #include <tvm/relax/analysis.h>
 #include <tvm/relax/attrs/distributed.h>
+#include <tvm/relax/attrs/index.h>
 #include <tvm/relax/attrs/linear_algebra.h>
 #include <tvm/relax/attrs/manipulate.h>
 #include <tvm/relax/attrs/nn.h>
@@ -338,6 +339,185 @@ void BuildAxisGraphReshape(const Var& output_var, const Call& call,
       old_shape_product *= old_shape_values[i];
       new_shape_product *= new_shape_values[j];
     }
+  }
+}
+
+void BuildAxisGraphTake(const Var& output_var, const Call& call,
+                        distributed::AxisGroupGraph* axis_group_graph) {
+  Expr data = call->args[0];
+  Expr indices = call->args[1];
+  const auto* attrs = call->attrs.as<TakeAttrs>();
+  TVM_FFI_ICHECK(attrs);
+  int data_ndim = GetTensorType(data)->ndim;
+  int axis = attrs->axis.has_value() ? static_cast<int>(attrs->axis.value()) : 0;
+  if (axis < 0) {
+    axis += data_ndim;
+  }
+  TVM_FFI_ICHECK(axis >= 0 && axis < data_ndim);
+  int indices_ndim = 0;
+  if (indices->ty.as<TensorTypeNode>() || indices->ty.as<DTensorTypeNode>()) {
+    indices_ndim = GetTensorType(indices)->ndim;
+    for (int i = 0; i < indices_ndim; i++) {
+      axis_group_graph->JoinAxis({indices.get(), i}, {output_var.get(), axis + i},
+                                 distributed::AxisGroupGraph::EdgeType::kDescend);
+    }
+  }
+
+  for (int i = 0; i < data_ndim; i++) {
+    if (i == axis) {
+      continue;
+    }
+    axis_group_graph->JoinAxis({data.get(), i},
+                               {output_var.get(), i < axis ? i : i + indices_ndim - 1},
+                               distributed::AxisGroupGraph::EdgeType::kDescend);
+  }
+}
+
+void BuildAxisGraphScan(const Var& output_var, const Call& call,
+                        distributed::AxisGroupGraph* axis_group_graph) {
+  Expr input_tensor = call->args[0];
+  const auto* attrs = call->attrs.as<ScanopAttrs>();
+  TVM_FFI_ICHECK(attrs);
+  if (!attrs->axis.has_value()) {
+    // The output is flattened, so no input axis corresponds to an output axis.
+    return;
+  }
+  int ndim = GetTensorType(input_tensor)->ndim;
+  int axis = static_cast<int>(attrs->axis.value());
+  if (axis < 0) {
+    axis += ndim;
+  }
+  TVM_FFI_ICHECK(axis >= 0 && axis < ndim);
+  // The scanned axis is left unjoined: a prefix scan along a sharded axis needs communication.
+  for (int i = 0; i < ndim; i++) {
+    if (i == axis) {
+      continue;
+    }
+    axis_group_graph->JoinAxis({input_tensor.get(), i}, {output_var.get(), i},
+                               distributed::AxisGroupGraph::EdgeType::kDescend);
+  }
+}
+
+void BuildAxisGraphExpandDims(const Var& output_var, const Call& call,
+                              distributed::AxisGroupGraph* axis_group_graph) {
+  Expr input_tensor = call->args[0];
+  const auto* attrs = call->attrs.as<ExpandDimsAttrs>();
+  TVM_FFI_ICHECK(attrs);
+  int ndim = GetTensorType(input_tensor)->ndim;
+  int out_ndim = ndim + attrs->axis.size();
+  std::vector<bool> is_new_dim(out_ndim, false);
+  for (int64_t axis : attrs->axis) {
+    is_new_dim[(static_cast<int>(axis) + out_ndim) % out_ndim] = true;
+  }
+  // The inserted axes have extent 1 and carry no data, so only the original axes are joined.
+  for (int i = 0, j = 0; i < out_ndim; i++) {
+    if (is_new_dim[i]) {
+      continue;
+    }
+    axis_group_graph->JoinAxis({input_tensor.get(), j}, {output_var.get(), i},
+                               distributed::AxisGroupGraph::EdgeType::kDescend);
+    j++;
+  }
+}
+
+/*!
+ * \brief Join the axes of a tail-aligned broadcast input to the output axes. An input axis that
+ * gets stretched (its extent differs from the output extent) is skipped: it holds a single element
+ * replicated along the output axis, so it cannot carry that axis' sharding.
+ */
+void BroadcastJoinHelper(const Expr& input_tensor, const Var& output_var,
+                         const ffi::Array<PrimExpr>& out_shape,
+                         distributed::AxisGroupGraph* axis_group_graph) {
+  const auto* input_ty = GetTensorType(input_tensor);
+  const auto* input_shape = input_ty->shape.as<ShapeExprNode>();
+  if (input_shape == nullptr) {
+    return;
+  }
+  int in_ndim = input_ty->ndim;
+  int out_ndim = out_shape.size();
+  TVM_FFI_ICHECK(in_ndim <= out_ndim);
+  arith::Analyzer analyzer;
+  for (int i = 0; i < in_ndim; i++) {
+    int out_dim = out_ndim - in_ndim + i;
+    if (!analyzer->CanProveEqual(input_shape->values[i], out_shape[out_dim])) {
+      continue;
+    }
+    axis_group_graph->JoinAxis({input_tensor.get(), i}, {output_var.get(), out_dim},
+                               distributed::AxisGroupGraph::EdgeType::kDescend);
+  }
+}
+
+void BuildAxisGraphBroadcastTo(const Var& output_var, const Call& call,
+                               distributed::AxisGroupGraph* axis_group_graph) {
+  const auto* tgt_shape_ty = GetTypeAs<ShapeTypeNode>(call->args[1]);
+  if (tgt_shape_ty == nullptr || !tgt_shape_ty->values.has_value()) {
+    return;
+  }
+  BroadcastJoinHelper(call->args[0], output_var, tgt_shape_ty->values.value(), axis_group_graph);
+}
+
+void BuildAxisGraphLayerNorm(const Var& output_var, const Call& call,
+                             distributed::AxisGroupGraph* axis_group_graph) {
+  Expr input_tensor = call->args[0];
+  const auto* attrs = call->attrs.as<LayerNormAttrs>();
+  TVM_FFI_ICHECK(attrs);
+  int ndim = GetTensorType(input_tensor)->ndim;
+  std::unordered_set<int> normalized_axes;
+  for (int64_t i : attrs->axes) {
+    int val = static_cast<int>(i);
+    TVM_FFI_ICHECK(val < ndim && val >= -ndim);
+    normalized_axes.insert(val < 0 ? val + ndim : val);
+  }
+  // gamma and beta only span the normalized axes, and those axes must stay replicated because the
+  // mean/variance reduction over them would otherwise need communication. So they get no edges and
+  // only the untouched data axes are joined.
+  for (int i = 0; i < ndim; i++) {
+    if (normalized_axes.count(i)) {
+      continue;
+    }
+    axis_group_graph->JoinAxis({input_tensor.get(), i}, {output_var.get(), i},
+                               distributed::AxisGroupGraph::EdgeType::kDescend);
+  }
+}
+
+void BuildAxisGraphWhere(const Var& output_var, const Call& call,
+                         distributed::AxisGroupGraph* axis_group_graph) {
+  const auto* out_shape = GetTensorType(output_var)->shape.as<ShapeExprNode>();
+  if (out_shape == nullptr) {
+    return;
+  }
+  // condition, x1 and x2 all broadcast against the output.
+  for (const Expr& arg : call->args) {
+    BroadcastJoinHelper(arg, output_var, out_shape->values, axis_group_graph);
+  }
+}
+
+void BuildAxisGraphIndexTensor(const Var& output_var, const Call& call,
+                               distributed::AxisGroupGraph* axis_group_graph) {
+  Expr data = call->args[0];
+  const auto* indices = call->args[1].as<TupleNode>();
+  if (indices == nullptr) {
+    return;
+  }
+  const auto* out_ty = GetTensorType(output_var);
+  const auto* out_shape = out_ty->shape.as<ShapeExprNode>();
+  if (out_shape == nullptr) {
+    return;
+  }
+  int n_indices = indices->fields.size();
+  int data_ndim = GetTensorType(data)->ndim;
+  // The index tensors broadcast against each other into the leading output axes; the data axes they
+  // index are gathered away, and the remaining data axes follow behind.
+  int bcast_ndim = out_ty->ndim - (data_ndim - n_indices);
+  TVM_FFI_ICHECK(bcast_ndim >= 0);
+  ffi::Array<PrimExpr> bcast_shape{out_shape->values.begin(),
+                                   out_shape->values.begin() + bcast_ndim};
+  for (const Expr& index : indices->fields) {
+    BroadcastJoinHelper(index, output_var, bcast_shape, axis_group_graph);
+  }
+  for (int i = n_indices; i < data_ndim; i++) {
+    axis_group_graph->JoinAxis({data.get(), i}, {output_var.get(), bcast_ndim + i - n_indices},
+                               distributed::AxisGroupGraph::EdgeType::kDescend);
   }
 }
 

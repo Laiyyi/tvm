@@ -43,9 +43,14 @@ namespace distributed {
 
 void CollectAxisGraphBinary(const VarBindingNode* binding, const CallNode* call,
                             AxisGroupGraph* axis_group_graph) {
+  // Must mirror the ops registered in op/distributed/binary.cc: they all infer their distributed
+  // type through BuildAxisGraphBinary, so leaving one out here silently stops sharding at it.
   const std::vector<std::string> binary_op_names = {
-      "add",     "subtract",      "multiply", "divide",     "power",     "floor_divide", "equal",
-      "greater", "greater_equal", "less",     "less_equal", "not_equal", "minimum",      "maximum"};
+      "add",         "subtract",    "multiply",      "divide",      "power",
+      "floor_divide", "mod",        "floor_mod",     "equal",       "greater",
+      "greater_equal", "less",      "less_equal",    "not_equal",   "minimum",
+      "maximum",     "logical_and", "logical_or",    "logical_xor", "bitwise_and",
+      "bitwise_or",  "bitwise_xor", "left_shift",    "right_shift"};
   for (const auto& op_name : binary_op_names) {
     const Op& binary_op = Op::Get("relax." + op_name);
     if (call->op.same_as(binary_op)) {
@@ -68,7 +73,9 @@ void CollectAxisGraphUnary(const VarBindingNode* binding, const CallNode* call,
       "square", "sqrt",     "tan",
       "tanh",   "clip",     "isfinite",
       "isinf",  "isnan",    "dist.annotate_sharding",
-      "erf",    "nn.gelu",  "builtin.stop_lift_params"};
+      "erf",    "nn.gelu",  "builtin.stop_lift_params",
+      "astype", "bitwise_not", "logical_not",
+      "nn.gelu_tanh", "nn.silu"};
   for (const auto& op_name : unary_op_names) {
     const Op& unary_op = Op::Get("relax." + op_name);
     if (call->op.same_as(unary_op)) {
@@ -114,6 +121,66 @@ void CollectAxisGraphReshape(const VarBindingNode* binding, const CallNode* call
   }
 }
 
+void CollectAxisGraphTake(const VarBindingNode* binding, const CallNode* call,
+                          AxisGroupGraph* axis_group_graph) {
+  static const Op& take_op = Op::Get("relax.take");
+  if (call->op.same_as(take_op)) {
+    BuildAxisGraphTake(binding->var, ffi::GetRef<Call>(call), axis_group_graph);
+  }
+}
+
+void CollectAxisGraphScan(const VarBindingNode* binding, const CallNode* call,
+                          AxisGroupGraph* axis_group_graph) {
+  const std::vector<std::string> scan_op_names = {"cumsum", "cumprod"};
+  for (const auto& op_name : scan_op_names) {
+    const Op& scan_op = Op::Get("relax." + op_name);
+    if (call->op.same_as(scan_op)) {
+      BuildAxisGraphScan(binding->var, ffi::GetRef<Call>(call), axis_group_graph);
+      break;
+    }
+  }
+}
+
+void CollectAxisGraphExpandDims(const VarBindingNode* binding, const CallNode* call,
+                                AxisGroupGraph* axis_group_graph) {
+  static const Op& expand_dims_op = Op::Get("relax.expand_dims");
+  if (call->op.same_as(expand_dims_op)) {
+    BuildAxisGraphExpandDims(binding->var, ffi::GetRef<Call>(call), axis_group_graph);
+  }
+}
+
+void CollectAxisGraphIndexTensor(const VarBindingNode* binding, const CallNode* call,
+                                 AxisGroupGraph* axis_group_graph) {
+  static const Op& index_tensor_op = Op::Get("relax.index_tensor");
+  if (call->op.same_as(index_tensor_op)) {
+    BuildAxisGraphIndexTensor(binding->var, ffi::GetRef<Call>(call), axis_group_graph);
+  }
+}
+
+void CollectAxisGraphBroadcastTo(const VarBindingNode* binding, const CallNode* call,
+                                 AxisGroupGraph* axis_group_graph) {
+  static const Op& broadcast_to_op = Op::Get("relax.broadcast_to");
+  if (call->op.same_as(broadcast_to_op)) {
+    BuildAxisGraphBroadcastTo(binding->var, ffi::GetRef<Call>(call), axis_group_graph);
+  }
+}
+
+void CollectAxisGraphWhere(const VarBindingNode* binding, const CallNode* call,
+                           AxisGroupGraph* axis_group_graph) {
+  static const Op& where_op = Op::Get("relax.where");
+  if (call->op.same_as(where_op)) {
+    BuildAxisGraphWhere(binding->var, ffi::GetRef<Call>(call), axis_group_graph);
+  }
+}
+
+void CollectAxisGraphLayerNorm(const VarBindingNode* binding, const CallNode* call,
+                               AxisGroupGraph* axis_group_graph) {
+  static const Op& layer_norm_op = Op::Get("relax.nn.layer_norm");
+  if (call->op.same_as(layer_norm_op)) {
+    BuildAxisGraphLayerNorm(binding->var, ffi::GetRef<Call>(call), axis_group_graph);
+  }
+}
+
 void CollectAxisGraphForDeviceMesh(const VarBindingNode* binding, const CallNode* call,
                                    AxisGroupGraph* axis_group_graph) {
   ffi::Array<Expr> tensor_list;
@@ -127,6 +194,15 @@ void CollectAxisGraphForDeviceMesh(const VarBindingNode* binding, const CallNode
   for (const auto& arg : args) {
     if (arg->ty.as<TensorTypeNode>()) {
       tensor_list.push_back(arg);
+    } else if (const auto* tuple = arg.as<TupleNode>()) {
+      // Ops such as index_tensor take some of their tensor inputs inside a tuple. The device mesh
+      // has to reach those fields as well, otherwise a subgraph that feeds nothing but a tuple ends
+      // up with no device mesh at all.
+      for (const auto& field : tuple->fields) {
+        if (field->ty.as<TensorTypeNode>()) {
+          tensor_list.push_back(field);
+        }
+      }
     }
   }
   for (int i = 0; i < static_cast<int>(tensor_list.size()); i++) {
@@ -157,6 +233,13 @@ class AxisGroupGraphBuilder : public ExprVisitor {
     CollectAxisGraphMatmul(binding, val, axis_group_graph_);
     CollectAxisGraphPermuteDims(binding, val, axis_group_graph_);
     CollectAxisGraphReshape(binding, val, axis_group_graph_);
+    CollectAxisGraphTake(binding, val, axis_group_graph_);
+    CollectAxisGraphScan(binding, val, axis_group_graph_);
+    CollectAxisGraphExpandDims(binding, val, axis_group_graph_);
+    CollectAxisGraphIndexTensor(binding, val, axis_group_graph_);
+    CollectAxisGraphBroadcastTo(binding, val, axis_group_graph_);
+    CollectAxisGraphWhere(binding, val, axis_group_graph_);
+    CollectAxisGraphLayerNorm(binding, val, axis_group_graph_);
     static const Op& call_tir_op = Op::Get("relax.call_tir");
     if (val->op.same_as(call_tir_op)) {
       if (ffi::Optional<tirx::PrimFunc> func = MatchPrimFunc(mod_, val->args[0])) {
@@ -179,6 +262,21 @@ class AxisGroupGraphBuilder : public ExprVisitor {
     int ndim = tensor_ty->ndim;
     for (int i = 0; i < ndim; i++) {
       axis_group_graph_->JoinAxis(Axis(val->tuple.get(), i, val->index), {binding->var.get(), i},
+                                  distributed::AxisGroupGraph::EdgeType::kDescend);
+    }
+    ExprVisitor::VisitBinding_(binding, val);
+  }
+
+  void VisitBinding_(const VarBindingNode* binding, const ConstantNode* val) {
+    // A constant bound straight to a var is never seen as a call argument, so it needs its own
+    // edges: without them the constant has no device mesh and cannot be turned into a DTensor.
+    const auto* tensor_ty = GetTypeAs<TensorTypeNode>(binding->var);
+    if (tensor_ty == nullptr) {
+      ExprVisitor::VisitBinding_(binding, val);
+      return;
+    }
+    for (int i = -1; i < tensor_ty->ndim; i++) {
+      axis_group_graph_->JoinAxis({val, i}, {binding->var.get(), i},
                                   distributed::AxisGroupGraph::EdgeType::kDescend);
     }
     ExprVisitor::VisitBinding_(binding, val);
@@ -444,9 +542,11 @@ class DistributedIRBuilder : public ExprMutator {
     };
     Call new_call = ExprMutator::VisitExpr_(call).as_or_throw<Call>();
     ffi::Array<Expr> args = GetCallArgs(new_call);
+    bool args_rewritten = false;
     for (int i = 0; i < static_cast<int>(args.size()); i++) {
       if (args[i].as<ConstantNode>()) {
         args.Set(i, RewriteInputTensorAndConstant(args[i]));
+        args_rewritten = true;
       }
     }
 
@@ -458,6 +558,12 @@ class DistributedIRBuilder : public ExprMutator {
         n->ty_args = {InferShardingSpec(Call(n), this->builder_, new_call->ty_args[0], f)};
       }
     } else {
+      // Rewriting constants here bypasses the type invalidation ExprMutatorBase does when it
+      // rebuilds a call, so drop the now-stale type ourselves. Without this, a call whose only
+      // tensor arguments are constants keeps its non-distributed type and never gets re-inferred.
+      if (args_rewritten) {
+        n->ty = Type::Missing();
+      }
       n->args = args;
     }
 
@@ -517,6 +623,16 @@ class DistributedIRBuilder : public ExprMutator {
         new_call = Call(new_call_node);
         new_call->ty = new_call_node->ty_args[0];
       }
+    } else if (const auto* tensor_ty =
+                   call->ty.IsMissing() ? nullptr : call->ty.as<TensorTypeNode>()) {
+      // An op with no tensor argument at all (arange, zeros, ones, ...) never reaches distributed
+      // type inference: BlockBuilder only takes that path when some argument is a DTensor, so a
+      // dist.FInferType would be dead code. Reaching here with a plain TensorType means inference
+      // never ran, so attach the propagated type by hand.
+      TVM_FFI_ICHECK(placements.size() == 1);
+      ffi::ObjectPtr<CallNode> new_call_node = ffi::make_object<CallNode>(*call.get());
+      new_call = Call(new_call_node);
+      new_call->ty = DTensorType(ffi::GetRef<TensorType>(tensor_ty), device_mesh, placements[0]);
     }
     return new_call;
   }
@@ -585,6 +701,16 @@ class DistributedIRBuilder : public ExprMutator {
         }
       }
     }
+  }
+
+  void VisitBinding_(const VarBindingNode* binding, const ConstantNode* val) {
+    // Constants that appear as call arguments are rewritten in VisitExpr_, but one bound straight
+    // to a var has to be converted here or its consumers would be handed a plain Tensor.
+    if (GetTypeAs<TensorTypeNode>(binding->var) == nullptr) {
+      ExprMutator::VisitBinding_(binding, val);
+      return;
+    }
+    ReEmitBinding(binding, RewriteInputTensorAndConstant(ffi::GetRef<Constant>(val)));
   }
 
   void VisitBinding_(const VarBindingNode* binding, const TupleGetItemNode* val) {

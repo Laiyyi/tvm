@@ -21,6 +21,8 @@
 
 #include <tvm/ffi/extra/visit_error_context.h>
 
+#include "../nn/nn.h"
+
 namespace tvm {
 namespace relax {
 namespace distributed {
@@ -47,6 +49,26 @@ Type InferDistTypeSoftmax(const Call& call, const BlockBuilder& ctx) {
 }
 
 TVM_REGISTER_OP("relax.nn.softmax").set_attr<FInferType>("dist.FInferType", InferDistTypeSoftmax);
+
+/* relax.nn.layer_norm */
+Type InferDistTypeLayerNorm(const Call& call, const BlockBuilder& ctx) {
+  ffi::Array<distributed::DTensorType> input_dtensor_tys = GetInputDTensorType(call, ctx);
+  TVM_FFI_ICHECK(input_dtensor_tys.size() == 3);
+  ffi::Array<TensorType> input_tys;
+  for (const distributed::DTensorType& dtensor_ty : input_dtensor_tys) {
+    input_tys.push_back(dtensor_ty->tensor_ty);
+  }
+  const auto* attrs = call->attrs.as<LayerNormAttrs>();
+  TVM_FFI_ICHECK(attrs);
+  if (NormCheckDtypeAndShape(call, ctx, input_tys, attrs->axes)) {
+    TVM_FFI_VISIT_THROW(ValueError, call) << "Input of distributed operator must have known shape";
+  }
+  // The output keeps the data type verbatim; only the placement is recomputed.
+  return InferShardingSpec(call, ctx, input_tys[0], distributed::BuildAxisGraphLayerNorm);
+}
+
+TVM_REGISTER_OP("relax.nn.layer_norm")
+    .set_attr<FInferType>("dist.FInferType", InferDistTypeLayerNorm);
 
 /* relax.nn.relu */
 RELAX_REGISTER_UNARY_ARITH_DIST_INFER_TYPE(nn.relu, /*require_float_dtype=*/false);

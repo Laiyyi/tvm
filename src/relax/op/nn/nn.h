@@ -45,6 +45,14 @@ namespace relax {
   RELAX_REGISTER_UNARY_OP(OpRegName).set_attr<FInferType>("FInferType",           \
                                                           InferTypeUnaryArith<RequireFloatDtype>)
 
+/*!
+ * \brief Validate a norm operator's inputs: every input must share the data dtype, and gamma, beta
+ * and friends must match the data extents on the normalized axes.
+ * \return Whether the data shape is unknown.
+ */
+bool NormCheckDtypeAndShape(const Call& call, const BlockBuilder& ctx,
+                            const ffi::Array<TensorType>& input_ty, ffi::Array<int64_t> axes);
+
 /*! \brief Rectified linear unit. */
 Expr relu(Expr data);
 

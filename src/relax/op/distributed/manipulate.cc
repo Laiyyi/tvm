@@ -130,6 +130,130 @@ Type InferDistTypeReshape(const Call& call, const BlockBuilder& ctx) {
 
 TVM_REGISTER_OP("relax.reshape").set_attr<FInferType>("dist.FInferType", InferDistTypeReshape);
 
+Type InferDistTypeExpandDims(const Call& call, const BlockBuilder& ctx) {
+  ffi::Array<distributed::DTensorType> input_dtensor_tys = GetInputDTensorType(call, ctx);
+  TVM_FFI_ICHECK(input_dtensor_tys.size() == 1);
+  TensorType data_ty = input_dtensor_tys[0]->tensor_ty;
+
+  const auto* attrs = call->attrs.as<ExpandDimsAttrs>();
+  TVM_FFI_ICHECK(attrs);
+  if (data_ty->IsUnknownNdim()) {
+    TVM_FFI_VISIT_THROW(ValueError, call) << "Input of distributed operator must have known ndim";
+  }
+  const auto* data_shape = data_ty->shape.as<ShapeExprNode>();
+  if (data_shape == nullptr) {
+    TVM_FFI_VISIT_THROW(ValueError, call) << "Input of distributed operator must have known shape";
+  }
+  int out_ndim = data_ty->ndim + attrs->axis.size();
+  std::vector<int> axes = NormalizeAxes(call, ctx, out_ndim, attrs->axis);
+  std::vector<bool> is_new_dim(out_ndim, false);
+  for (int axis : axes) {
+    is_new_dim[axis] = true;
+  }
+  // Every inserted axis has extent 1; the rest keep the input extents in order.
+  ffi::Array<PrimExpr> out_shape;
+  for (int i = 0, j = 0; i < out_ndim; i++) {
+    out_shape.push_back(is_new_dim[i] ? IntImm::Int64(/*value=*/1) : data_shape->values[j++]);
+  }
+  TensorType output_tensor_ty(ShapeExpr(out_shape), data_ty->dtype);
+  return InferShardingSpec(call, ctx, output_tensor_ty, distributed::BuildAxisGraphExpandDims);
+}
+
+TVM_REGISTER_OP("relax.expand_dims")
+    .set_attr<FInferType>("dist.FInferType", InferDistTypeExpandDims);
+
+Type InferDistTypeIndexTensor(const Call& call, const BlockBuilder& ctx) {
+  if (call->args.size() != 2) {
+    TVM_FFI_VISIT_THROW(ValueError, call) << "index_tensor op should have 2 arguments";
+  }
+  ffi::Array<distributed::DTensorType> input_dtensor_tys = GetInputDTensorType(call, ctx);
+  TVM_FFI_ICHECK(input_dtensor_tys.size() == 1);
+  TensorType data_ty = input_dtensor_tys[0]->tensor_ty;
+
+  const auto* indices_tuple_ty = GetTypeAs<TupleTypeNode>(call->args[1]);
+  if (indices_tuple_ty == nullptr || indices_tuple_ty->fields.empty()) {
+    TVM_FFI_VISIT_THROW(ValueError, call)
+        << "index_tensor expects a non-empty tuple of index tensors. However, the given one is "
+        << call->args[1]->ty;
+  }
+  ffi::Array<TensorType> indices_ty;
+  for (const Type& field_ty : indices_tuple_ty->fields) {
+    if (const auto* dtensor_ty = field_ty.as<distributed::DTensorTypeNode>()) {
+      indices_ty.push_back(dtensor_ty->tensor_ty);
+    } else {
+      indices_ty.push_back(field_ty.as_or_throw<TensorType>());
+    }
+  }
+  int n_indices = indices_ty.size();
+  if (data_ty->IsUnknownNdim()) {
+    TVM_FFI_VISIT_THROW(ValueError, call) << "Input of distributed operator must have known ndim";
+  }
+  if (n_indices > data_ty->ndim) {
+    TVM_FFI_VISIT_THROW(ValueError, call)
+        << "index_tensor received " << n_indices << " index tensors, but data has only "
+        << data_ty->ndim << " dimensions";
+  }
+
+  const auto* data_shape = data_ty->shape.as<ShapeExprNode>();
+  if (data_shape == nullptr) {
+    TVM_FFI_VISIT_THROW(ValueError, call) << "Input of distributed operator must have known shape";
+  }
+  // The index tensors broadcast against each other, and what is left of the data shape after the
+  // indexed axes is appended to that.
+  ffi::Optional<ffi::Array<PrimExpr>> bcast_shape;
+  for (const TensorType& index_ty : indices_ty) {
+    const auto* index_shape = index_ty->shape.as<ShapeExprNode>();
+    if (index_shape == nullptr) {
+      TVM_FFI_VISIT_THROW(ValueError, call)
+          << "Input of distributed operator must have known shape";
+    }
+    bcast_shape = bcast_shape.has_value()
+                      ? InferBinaryBroadcastShape(call, ctx, bcast_shape.value(),
+                                                  index_shape->values)
+                      : index_shape->values;
+    if (!bcast_shape.has_value()) {
+      TVM_FFI_VISIT_THROW(ValueError, call) << "index_tensor: cannot broadcast index shapes";
+    }
+  }
+  ffi::Array<PrimExpr> out_shape = bcast_shape.value();
+  for (int i = n_indices; i < data_ty->ndim; i++) {
+    out_shape.push_back(data_shape->values[i]);
+  }
+  TensorType output_tensor_ty(ShapeExpr(out_shape), data_ty->dtype);
+  return InferShardingSpec(call, ctx, output_tensor_ty, distributed::BuildAxisGraphIndexTensor);
+}
+
+TVM_REGISTER_OP("relax.index_tensor")
+    .set_attr<FInferType>("dist.FInferType", InferDistTypeIndexTensor);
+
+Type InferDistTypeBroadcastTo(const Call& call, const BlockBuilder& ctx) {
+  if (call->args.size() != 2) {
+    TVM_FFI_VISIT_THROW(ValueError, call) << "broadcast_to should take 2 arguments";
+  }
+  ffi::Array<distributed::DTensorType> input_dtensor_tys = GetInputDTensorType(call, ctx);
+  TVM_FFI_ICHECK(input_dtensor_tys.size() == 1);
+  TensorType data_ty = input_dtensor_tys[0]->tensor_ty;
+
+  const auto* tgt_shape_ty = GetTypeAs<ShapeTypeNode>(call->args[1]);
+  if (tgt_shape_ty == nullptr) {
+    TVM_FFI_VISIT_THROW(TypeError, call)
+        << "broadcast_to requires the target shape to be Shape. However, the given one is "
+        << call->args[1]->ty->GetTypeKey();
+  }
+  if (!data_ty->IsUnknownNdim() && !tgt_shape_ty->IsUnknownNdim() &&
+      tgt_shape_ty->ndim < data_ty->ndim) {
+    TVM_FFI_VISIT_THROW(ValueError, call)
+        << "broadcast_to expects the target shape to have at least the ndim of the input tensor. "
+           "However, the given tensor has ndim "
+        << data_ty->ndim << " while the target shape has ndim " << tgt_shape_ty->ndim;
+  }
+  TensorType output_tensor_ty(/*shape=*/call->args[1], data_ty->dtype);
+  return InferShardingSpec(call, ctx, output_tensor_ty, distributed::BuildAxisGraphBroadcastTo);
+}
+
+TVM_REGISTER_OP("relax.broadcast_to")
+    .set_attr<FInferType>("dist.FInferType", InferDistTypeBroadcastTo);
+
 }  // namespace distributed
 }  // namespace relax
 }  // namespace tvm
