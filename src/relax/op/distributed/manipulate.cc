@@ -130,6 +130,38 @@ Type InferDistTypeReshape(const Call& call, const BlockBuilder& ctx) {
 
 TVM_REGISTER_OP("relax.reshape").set_attr<FInferType>("dist.FInferType", InferDistTypeReshape);
 
+Type InferDistTypeExpandDims(const Call& call, const BlockBuilder& ctx) {
+  ffi::Array<distributed::DTensorType> input_dtensor_tys = GetInputDTensorType(call, ctx);
+  TVM_FFI_ICHECK(input_dtensor_tys.size() == 1);
+  TensorType data_ty = input_dtensor_tys[0]->tensor_ty;
+
+  const auto* attrs = call->attrs.as<ExpandDimsAttrs>();
+  TVM_FFI_ICHECK(attrs);
+  if (data_ty->IsUnknownNdim()) {
+    TVM_FFI_VISIT_THROW(ValueError, call) << "Input of distributed operator must have known ndim";
+  }
+  const auto* data_shape = data_ty->shape.as<ShapeExprNode>();
+  if (data_shape == nullptr) {
+    TVM_FFI_VISIT_THROW(ValueError, call) << "Input of distributed operator must have known shape";
+  }
+  int out_ndim = data_ty->ndim + attrs->axis.size();
+  std::vector<int> axes = NormalizeAxes(call, ctx, out_ndim, attrs->axis);
+  std::vector<bool> is_new_dim(out_ndim, false);
+  for (int axis : axes) {
+    is_new_dim[axis] = true;
+  }
+  // Every inserted axis has extent 1; the rest keep the input extents in order.
+  ffi::Array<PrimExpr> out_shape;
+  for (int i = 0, j = 0; i < out_ndim; i++) {
+    out_shape.push_back(is_new_dim[i] ? IntImm::Int64(/*value=*/1) : data_shape->values[j++]);
+  }
+  TensorType output_tensor_ty(ShapeExpr(out_shape), data_ty->dtype);
+  return InferShardingSpec(call, ctx, output_tensor_ty, distributed::BuildAxisGraphExpandDims);
+}
+
+TVM_REGISTER_OP("relax.expand_dims")
+    .set_attr<FInferType>("dist.FInferType", InferDistTypeExpandDims);
+
 }  // namespace distributed
 }  // namespace relax
 }  // namespace tvm

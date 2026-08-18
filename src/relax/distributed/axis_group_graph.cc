@@ -398,6 +398,28 @@ void BuildAxisGraphScan(const Var& output_var, const Call& call,
   }
 }
 
+void BuildAxisGraphExpandDims(const Var& output_var, const Call& call,
+                              distributed::AxisGroupGraph* axis_group_graph) {
+  Expr input_tensor = call->args[0];
+  const auto* attrs = call->attrs.as<ExpandDimsAttrs>();
+  TVM_FFI_ICHECK(attrs);
+  int ndim = GetTensorType(input_tensor)->ndim;
+  int out_ndim = ndim + attrs->axis.size();
+  std::vector<bool> is_new_dim(out_ndim, false);
+  for (int64_t axis : attrs->axis) {
+    is_new_dim[(static_cast<int>(axis) + out_ndim) % out_ndim] = true;
+  }
+  // The inserted axes have extent 1 and carry no data, so only the original axes are joined.
+  for (int i = 0, j = 0; i < out_ndim; i++) {
+    if (is_new_dim[i]) {
+      continue;
+    }
+    axis_group_graph->JoinAxis({input_tensor.get(), j}, {output_var.get(), i},
+                               distributed::AxisGroupGraph::EdgeType::kDescend);
+    j++;
+  }
+}
+
 inline int GetNumOutput(Call call) {
   Type output_ty = call->ty_args[0];
   if (const auto* tuple_ty = output_ty.as<TupleTypeNode>()) {
