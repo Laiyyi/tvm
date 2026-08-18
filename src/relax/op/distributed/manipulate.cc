@@ -226,6 +226,34 @@ Type InferDistTypeIndexTensor(const Call& call, const BlockBuilder& ctx) {
 TVM_REGISTER_OP("relax.index_tensor")
     .set_attr<FInferType>("dist.FInferType", InferDistTypeIndexTensor);
 
+Type InferDistTypeBroadcastTo(const Call& call, const BlockBuilder& ctx) {
+  if (call->args.size() != 2) {
+    TVM_FFI_VISIT_THROW(ValueError, call) << "broadcast_to should take 2 arguments";
+  }
+  ffi::Array<distributed::DTensorType> input_dtensor_tys = GetInputDTensorType(call, ctx);
+  TVM_FFI_ICHECK(input_dtensor_tys.size() == 1);
+  TensorType data_ty = input_dtensor_tys[0]->tensor_ty;
+
+  const auto* tgt_shape_ty = GetTypeAs<ShapeTypeNode>(call->args[1]);
+  if (tgt_shape_ty == nullptr) {
+    TVM_FFI_VISIT_THROW(TypeError, call)
+        << "broadcast_to requires the target shape to be Shape. However, the given one is "
+        << call->args[1]->ty->GetTypeKey();
+  }
+  if (!data_ty->IsUnknownNdim() && !tgt_shape_ty->IsUnknownNdim() &&
+      tgt_shape_ty->ndim < data_ty->ndim) {
+    TVM_FFI_VISIT_THROW(ValueError, call)
+        << "broadcast_to expects the target shape to have at least the ndim of the input tensor. "
+           "However, the given tensor has ndim "
+        << data_ty->ndim << " while the target shape has ndim " << tgt_shape_ty->ndim;
+  }
+  TensorType output_tensor_ty(/*shape=*/call->args[1], data_ty->dtype);
+  return InferShardingSpec(call, ctx, output_tensor_ty, distributed::BuildAxisGraphBroadcastTo);
+}
+
+TVM_REGISTER_OP("relax.broadcast_to")
+    .set_attr<FInferType>("dist.FInferType", InferDistTypeBroadcastTo);
+
 }  // namespace distributed
 }  // namespace relax
 }  // namespace tvm

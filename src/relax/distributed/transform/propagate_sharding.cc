@@ -151,6 +151,14 @@ void CollectAxisGraphIndexTensor(const VarBindingNode* binding, const CallNode* 
   }
 }
 
+void CollectAxisGraphBroadcastTo(const VarBindingNode* binding, const CallNode* call,
+                                 AxisGroupGraph* axis_group_graph) {
+  static const Op& broadcast_to_op = Op::Get("relax.broadcast_to");
+  if (call->op.same_as(broadcast_to_op)) {
+    BuildAxisGraphBroadcastTo(binding->var, ffi::GetRef<Call>(call), axis_group_graph);
+  }
+}
+
 void CollectAxisGraphForDeviceMesh(const VarBindingNode* binding, const CallNode* call,
                                    AxisGroupGraph* axis_group_graph) {
   ffi::Array<Expr> tensor_list;
@@ -207,6 +215,7 @@ class AxisGroupGraphBuilder : public ExprVisitor {
     CollectAxisGraphScan(binding, val, axis_group_graph_);
     CollectAxisGraphExpandDims(binding, val, axis_group_graph_);
     CollectAxisGraphIndexTensor(binding, val, axis_group_graph_);
+    CollectAxisGraphBroadcastTo(binding, val, axis_group_graph_);
     static const Op& call_tir_op = Op::Get("relax.call_tir");
     if (val->op.same_as(call_tir_op)) {
       if (ffi::Optional<tirx::PrimFunc> func = MatchPrimFunc(mod_, val->args[0])) {
@@ -229,6 +238,21 @@ class AxisGroupGraphBuilder : public ExprVisitor {
     int ndim = tensor_ty->ndim;
     for (int i = 0; i < ndim; i++) {
       axis_group_graph_->JoinAxis(Axis(val->tuple.get(), i, val->index), {binding->var.get(), i},
+                                  distributed::AxisGroupGraph::EdgeType::kDescend);
+    }
+    ExprVisitor::VisitBinding_(binding, val);
+  }
+
+  void VisitBinding_(const VarBindingNode* binding, const ConstantNode* val) {
+    // A constant bound straight to a var is never seen as a call argument, so it needs its own
+    // edges: without them the constant has no device mesh and cannot be turned into a DTensor.
+    const auto* tensor_ty = GetTypeAs<TensorTypeNode>(binding->var);
+    if (tensor_ty == nullptr) {
+      ExprVisitor::VisitBinding_(binding, val);
+      return;
+    }
+    for (int i = -1; i < tensor_ty->ndim; i++) {
+      axis_group_graph_->JoinAxis({val, i}, {binding->var.get(), i},
                                   distributed::AxisGroupGraph::EdgeType::kDescend);
     }
     ExprVisitor::VisitBinding_(binding, val);
@@ -653,6 +677,16 @@ class DistributedIRBuilder : public ExprMutator {
         }
       }
     }
+  }
+
+  void VisitBinding_(const VarBindingNode* binding, const ConstantNode* val) {
+    // Constants that appear as call arguments are rewritten in VisitExpr_, but one bound straight
+    // to a var has to be converted here or its consumers would be handed a plain Tensor.
+    if (GetTypeAs<TensorTypeNode>(binding->var) == nullptr) {
+      ExprMutator::VisitBinding_(binding, val);
+      return;
+    }
+    ReEmitBinding(binding, RewriteInputTensorAndConstant(ffi::GetRef<Constant>(val)));
   }
 
   void VisitBinding_(const VarBindingNode* binding, const TupleGetItemNode* val) {
