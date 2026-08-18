@@ -34,6 +34,8 @@ Type InferDistTypePermuteDims(const Call& call, const BlockBuilder& ctx);
 
 Type InferDistTypeReshape(const Call& call, const BlockBuilder& ctx);
 
+Type InferDistTypeExpandDims(const Call& call, const BlockBuilder& ctx);
+
 }  // namespace distributed
 }  // namespace relax
 }  // namespace tvm

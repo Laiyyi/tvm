@@ -135,6 +135,14 @@ void CollectAxisGraphScan(const VarBindingNode* binding, const CallNode* call,
   }
 }
 
+void CollectAxisGraphExpandDims(const VarBindingNode* binding, const CallNode* call,
+                                AxisGroupGraph* axis_group_graph) {
+  static const Op& expand_dims_op = Op::Get("relax.expand_dims");
+  if (call->op.same_as(expand_dims_op)) {
+    BuildAxisGraphExpandDims(binding->var, ffi::GetRef<Call>(call), axis_group_graph);
+  }
+}
+
 void CollectAxisGraphForDeviceMesh(const VarBindingNode* binding, const CallNode* call,
                                    AxisGroupGraph* axis_group_graph) {
   ffi::Array<Expr> tensor_list;
@@ -189,6 +197,7 @@ class AxisGroupGraphBuilder : public ExprVisitor {
     CollectAxisGraphReshape(binding, val, axis_group_graph_);
     CollectAxisGraphTake(binding, val, axis_group_graph_);
     CollectAxisGraphScan(binding, val, axis_group_graph_);
+    CollectAxisGraphExpandDims(binding, val, axis_group_graph_);
     static const Op& call_tir_op = Op::Get("relax.call_tir");
     if (val->op.same_as(call_tir_op)) {
       if (ffi::Optional<tirx::PrimFunc> func = MatchPrimFunc(mod_, val->args[0])) {
