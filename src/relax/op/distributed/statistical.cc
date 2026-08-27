@@ -100,7 +100,6 @@ Type InferDistTypeScan(const Call& call, const BlockBuilder& ctx) {
 
   TensorType output_tensor_ty = TensorType(ShapeExpr(data_shape->values), out_dtype);
   if (!attrs->axis.has_value()) {
-    // Without an axis the input is scanned as a flattened 1-D tensor.
     PrimExpr flattened_d = 1;
     for (const PrimExpr& v : data_shape->values) {
       flattened_d *= v;

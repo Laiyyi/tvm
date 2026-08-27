@@ -43,8 +43,6 @@ namespace distributed {
 
 void CollectAxisGraphBinary(const VarBindingNode* binding, const CallNode* call,
                             AxisGroupGraph* axis_group_graph) {
-  // Must mirror the ops registered in op/distributed/binary.cc: they all infer their distributed
-  // type through BuildAxisGraphBinary, so leaving one out here silently stops sharding at it.
   const std::vector<std::string> binary_op_names = {
       "add",         "subtract",    "multiply",      "divide",      "power",
       "floor_divide", "mod",        "floor_mod",     "equal",       "greater",
@@ -195,9 +193,6 @@ void CollectAxisGraphForDeviceMesh(const VarBindingNode* binding, const CallNode
     if (arg->ty.as<TensorTypeNode>()) {
       tensor_list.push_back(arg);
     } else if (const auto* tuple = arg.as<TupleNode>()) {
-      // Ops such as index_tensor take some of their tensor inputs inside a tuple. The device mesh
-      // has to reach those fields as well, otherwise a subgraph that feeds nothing but a tuple ends
-      // up with no device mesh at all.
       for (const auto& field : tuple->fields) {
         if (field->ty.as<TensorTypeNode>()) {
           tensor_list.push_back(field);
@@ -268,8 +263,6 @@ class AxisGroupGraphBuilder : public ExprVisitor {
   }
 
   void VisitBinding_(const VarBindingNode* binding, const ConstantNode* val) {
-    // A constant bound straight to a var is never seen as a call argument, so it needs its own
-    // edges: without them the constant has no device mesh and cannot be turned into a DTensor.
     const auto* tensor_ty = GetTypeAs<TensorTypeNode>(binding->var);
     if (tensor_ty == nullptr) {
       ExprVisitor::VisitBinding_(binding, val);
@@ -558,9 +551,6 @@ class DistributedIRBuilder : public ExprMutator {
         n->ty_args = {InferShardingSpec(Call(n), this->builder_, new_call->ty_args[0], f)};
       }
     } else {
-      // Rewriting constants here bypasses the type invalidation ExprMutatorBase does when it
-      // rebuilds a call, so drop the now-stale type ourselves. Without this, a call whose only
-      // tensor arguments are constants keeps its non-distributed type and never gets re-inferred.
       if (args_rewritten) {
         n->ty = Type::Missing();
       }
@@ -625,10 +615,6 @@ class DistributedIRBuilder : public ExprMutator {
       }
     } else if (const auto* tensor_ty =
                    call->ty.IsMissing() ? nullptr : call->ty.as<TensorTypeNode>()) {
-      // An op with no tensor argument at all (arange, zeros, ones, ...) never reaches distributed
-      // type inference: BlockBuilder only takes that path when some argument is a DTensor, so a
-      // dist.FInferType would be dead code. Reaching here with a plain TensorType means inference
-      // never ran, so attach the propagated type by hand.
       TVM_FFI_ICHECK(placements.size() == 1);
       ffi::ObjectPtr<CallNode> new_call_node = ffi::make_object<CallNode>(*call.get());
       new_call = Call(new_call_node);
@@ -704,8 +690,6 @@ class DistributedIRBuilder : public ExprMutator {
   }
 
   void VisitBinding_(const VarBindingNode* binding, const ConstantNode* val) {
-    // Constants that appear as call arguments are rewritten in VisitExpr_, but one bound straight
-    // to a var has to be converted here or its consumers would be handed a plain Tensor.
     if (GetTypeAs<TensorTypeNode>(binding->var) == nullptr) {
       ExprMutator::VisitBinding_(binding, val);
       return;

@@ -150,7 +150,6 @@ Type InferDistTypeExpandDims(const Call& call, const BlockBuilder& ctx) {
   for (int axis : axes) {
     is_new_dim[axis] = true;
   }
-  // Every inserted axis has extent 1; the rest keep the input extents in order.
   ffi::Array<PrimExpr> out_shape;
   for (int i = 0, j = 0; i < out_ndim; i++) {
     out_shape.push_back(is_new_dim[i] ? IntImm::Int64(/*value=*/1) : data_shape->values[j++]);
@@ -198,8 +197,6 @@ Type InferDistTypeIndexTensor(const Call& call, const BlockBuilder& ctx) {
   if (data_shape == nullptr) {
     TVM_FFI_VISIT_THROW(ValueError, call) << "Input of distributed operator must have known shape";
   }
-  // The index tensors broadcast against each other, and what is left of the data shape after the
-  // indexed axes is appended to that.
   ffi::Optional<ffi::Array<PrimExpr>> bcast_shape;
   for (const TensorType& index_ty : indices_ty) {
     const auto* index_shape = index_ty->shape.as<ShapeExprNode>();

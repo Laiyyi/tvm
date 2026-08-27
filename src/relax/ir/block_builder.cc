@@ -836,7 +836,8 @@ class Normalizer : public BlockBuilderImpl, private ExprFunctor<Expr(const Expr&
       if (is_dist_op) {
         for (const auto& arg : call->args) {
           TVM_FFI_ICHECK(!arg->ty.as<TensorTypeNode>())
-              << "Distributed operator must take DTensor instead of Tensor as input";
+              << "Distributed operator must take DTensor instead of Tensor as input, but " << arg
+              << " of " << call << " is a " << arg->ty;
         }
         TVM_FFI_ICHECK(op_map_dist_infer_ty.count(op))
             << " Cannot find the dist.FInferType attribute registered to op: " << op->name;

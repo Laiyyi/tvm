@@ -35,7 +35,6 @@ Type InferDistTypeWhere(const Call& call, const BlockBuilder& ctx) {
   TensorType x1_ty = input_dtensor_tys[1]->tensor_ty;
   TensorType x2_ty = input_dtensor_tys[2]->tensor_ty;
 
-  // The condition check only cares about the boolean element kind, as in the non-distributed one.
   if (!cond_ty->IsUnknownDtype() && !cond_ty->dtype.value().MatchesCode(DLDataTypeCode::kDLBool)) {
     TVM_FFI_VISIT_THROW(TypeError, call)
         << "Where requires the input condition tensor to have boolean dtype. However, "

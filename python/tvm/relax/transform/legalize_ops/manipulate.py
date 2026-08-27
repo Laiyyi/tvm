@@ -202,8 +202,10 @@ def _gather_nd(bb: BlockBuilder, call: Call) -> Expr:
 @register_legalize("relax.index_tensor")
 def _index_tensor(bb: BlockBuilder, call: Call) -> Expr:
     t = call.args[1]
-    n_field = len(t.ty.fields)
-    fields = [bb.emit(TupleGetItem(t, i)) for i in range(n_field)]
+    if isinstance(t, Tuple):
+        fields = list(t.fields)
+    else:
+        fields = [bb.emit(TupleGetItem(t, i)) for i in range(len(t.ty.fields))]
     return bb.call_te(topi.index_tensor, call.args[0], fields)
 
 

@@ -184,6 +184,15 @@ class DistIRSharder : public ExprMutator {
     return new_func;
   }
 
+  using ExprMutator::VisitExpr_;
+
+  Expr VisitExpr_(const ConstantNode* op) final {
+    if (GetType(ffi::GetRef<Constant>(op)).as<DTensorTypeNode>()) {
+      return ShardInputParamTensorAndConstant(ffi::GetRef<Constant>(op));
+    }
+    return ExprMutator::VisitExpr_(op);
+  }
+
   void VisitBinding_(const VarBindingNode* binding, const TupleGetItemNode* val) {
     if (tuple_getitem_remap_.count(ffi::GetRef<TupleGetItem>(val))) {
       var_remap_[binding->var] = tuple_getitem_remap_[ffi::GetRef<TupleGetItem>(val)];
@@ -212,9 +221,10 @@ class DistIRSharder : public ExprMutator {
 
   Call HandleSpecialCaseinDTensorLowering(const CallNode* call, Var binding_var) {
     static Op reshape_op = Op::Get("relax.reshape");
+    static Op broadcast_to_op = Op::Get("relax.broadcast_to");
     static Op call_tir_op = Op::Get("relax.call_tir");
     static Op call_tir_local_view_op = Op::Get("relax.dist.call_tir_local_view");
-    if (call->op.same_as(reshape_op)) {
+    if (call->op.same_as(reshape_op) || call->op.same_as(broadcast_to_op)) {
       TVM_FFI_ICHECK(call->args[1].as<ShapeExprNode>());
       const auto* out_ty = GetTypeAs<DTensorTypeNode>(binding_var);
       TVM_FFI_ICHECK(out_ty);
@@ -251,6 +261,11 @@ class DistIRSharder : public ExprMutator {
   void VisitBinding_(const VarBindingNode* binding, const CallNode* val) {
     Call new_call =
         this->VisitExpr(HandleSpecialCaseinDTensorLowering(val, binding->var)).as_or_throw<Call>();
+    if (new_call->ty.as<DTensorTypeNode>()) {
+      auto n = ffi::make_object<CallNode>(*new_call.get());
+      n->ty = Type::Missing();
+      new_call = Call(n);
+    }
     ReEmitBinding(binding, builder_->Normalize(new_call));
   }
 

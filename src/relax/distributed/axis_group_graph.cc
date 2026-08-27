@@ -338,6 +338,10 @@ void BuildAxisGraphReshape(const Var& output_var, const Call& call,
       j--;
       old_shape_product *= old_shape_values[i];
       new_shape_product *= new_shape_values[j];
+      if ((i == 0 || j == 0) && analyzer_->CanProve(old_shape_product == new_shape_product)) {
+        axis_group_graph->JoinAxis({input_tensor.get(), i}, {output_var.get(), j},
+                                   distributed::AxisGroupGraph::EdgeType::kDescend);
+      }
     }
   }
 }
@@ -379,7 +383,6 @@ void BuildAxisGraphScan(const Var& output_var, const Call& call,
   const auto* attrs = call->attrs.as<ScanopAttrs>();
   TVM_FFI_ICHECK(attrs);
   if (!attrs->axis.has_value()) {
-    // The output is flattened, so no input axis corresponds to an output axis.
     return;
   }
   int ndim = GetTensorType(input_tensor)->ndim;
@@ -388,7 +391,6 @@ void BuildAxisGraphScan(const Var& output_var, const Call& call,
     axis += ndim;
   }
   TVM_FFI_ICHECK(axis >= 0 && axis < ndim);
-  // The scanned axis is left unjoined: a prefix scan along a sharded axis needs communication.
   for (int i = 0; i < ndim; i++) {
     if (i == axis) {
       continue;
@@ -409,7 +411,6 @@ void BuildAxisGraphExpandDims(const Var& output_var, const Call& call,
   for (int64_t axis : attrs->axis) {
     is_new_dim[(static_cast<int>(axis) + out_ndim) % out_ndim] = true;
   }
-  // The inserted axes have extent 1 and carry no data, so only the original axes are joined.
   for (int i = 0, j = 0; i < out_ndim; i++) {
     if (is_new_dim[i]) {
       continue;
@@ -420,11 +421,6 @@ void BuildAxisGraphExpandDims(const Var& output_var, const Call& call,
   }
 }
 
-/*!
- * \brief Join the axes of a tail-aligned broadcast input to the output axes. An input axis that
- * gets stretched (its extent differs from the output extent) is skipped: it holds a single element
- * replicated along the output axis, so it cannot carry that axis' sharding.
- */
 void BroadcastJoinHelper(const Expr& input_tensor, const Var& output_var,
                          const ffi::Array<PrimExpr>& out_shape,
                          distributed::AxisGroupGraph* axis_group_graph) {
@@ -468,9 +464,6 @@ void BuildAxisGraphLayerNorm(const Var& output_var, const Call& call,
     TVM_FFI_ICHECK(val < ndim && val >= -ndim);
     normalized_axes.insert(val < 0 ? val + ndim : val);
   }
-  // gamma and beta only span the normalized axes, and those axes must stay replicated because the
-  // mean/variance reduction over them would otherwise need communication. So they get no edges and
-  // only the untouched data axes are joined.
   for (int i = 0; i < ndim; i++) {
     if (normalized_axes.count(i)) {
       continue;
@@ -486,7 +479,6 @@ void BuildAxisGraphWhere(const Var& output_var, const Call& call,
   if (out_shape == nullptr) {
     return;
   }
-  // condition, x1 and x2 all broadcast against the output.
   for (const Expr& arg : call->args) {
     BroadcastJoinHelper(arg, output_var, out_shape->values, axis_group_graph);
   }
@@ -506,8 +498,6 @@ void BuildAxisGraphIndexTensor(const Var& output_var, const Call& call,
   }
   int n_indices = indices->fields.size();
   int data_ndim = GetTensorType(data)->ndim;
-  // The index tensors broadcast against each other into the leading output axes; the data axes they
-  // index are gathered away, and the remaining data axes follow behind.
   int bcast_ndim = out_ty->ndim - (data_ndim - n_indices);
   TVM_FFI_ICHECK(bcast_ndim >= 0);
   ffi::Array<PrimExpr> bcast_shape{out_shape->values.begin(),

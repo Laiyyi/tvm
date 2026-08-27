@@ -115,6 +115,29 @@ void InitCCLPerWorker(ffi::Shape device_ids) {
 
 void SyncWorker() {}
 
+// DiscoRingChannel::Send is a blocking write() on a pipe, and every worker on the ring
+// sends before it receives. A transfer larger than the pipe buffer (64 KiB by default on
+// Linux) therefore blocks every worker inside Send at once and nobody reaches Recv.
+// Interleaving the exchange in pieces that always fit keeps the ring making progress.
+static constexpr int64_t kRingPieceBytes = 32 << 10;
+
+static void RingExchange(DiscoWorker* worker, const char* send_buf, int64_t send_bytes,
+                         char* recv_buf, int64_t recv_bytes) {
+  int64_t sent = 0, received = 0;
+  while (sent < send_bytes || received < recv_bytes) {
+    if (sent < send_bytes) {
+      int64_t n = std::min(kRingPieceBytes, send_bytes - sent);
+      worker->ring_out->Send(send_buf + sent, static_cast<size_t>(n));
+      sent += n;
+    }
+    if (received < recv_bytes) {
+      int64_t n = std::min(kRingPieceBytes, recv_bytes - received);
+      worker->ring_in->Recv(recv_buf + received, static_cast<size_t>(n));
+      received += n;
+    }
+  }
+}
+
 void AllReduce(Tensor send, ReduceKind reduce_kind, bool /*in_group*/, Tensor recv) {
   DiscoWorker* worker = DiscoWorker::ThreadLocal();
 
@@ -156,8 +179,7 @@ void AllReduce(Tensor send, ReduceKind reduce_kind, bool /*in_group*/, Tensor re
     int64_t r_size = std::min(chunk_bytes, bytes - r_off);
     if (s_size <= 0 || r_size <= 0) continue;
 
-    worker->ring_out->Send(buf + s_off, static_cast<size_t>(s_size));
-    worker->ring_in->Recv(tmp.data(), static_cast<size_t>(r_size));
+    RingExchange(worker, buf + s_off, s_size, tmp.data(), r_size);
     ReduceBytes(buf + r_off, tmp.data(), r_size / dtype_bytes, dtype, acc_kind);
   }
 
@@ -171,8 +193,7 @@ void AllReduce(Tensor send, ReduceKind reduce_kind, bool /*in_group*/, Tensor re
     int64_t r_size = std::min(chunk_bytes, bytes - r_off);
     if (s_size <= 0 || r_size <= 0) continue;
 
-    worker->ring_out->Send(buf + s_off, static_cast<size_t>(s_size));
-    worker->ring_in->Recv(buf + r_off, static_cast<size_t>(r_size));
+    RingExchange(worker, buf + s_off, s_size, buf + r_off, r_size);
   }
 
   if (reduce_kind == ReduceKind::kAvg) {
@@ -201,8 +222,8 @@ void AllGather(Tensor send, bool /*in_group*/, Tensor recv) {
     int si = ((rank - r) % num_workers + num_workers) % num_workers;
     int ri = ((rank - r - 1) % num_workers + num_workers) % num_workers;
 
-    worker->ring_out->Send(buf + si * chunk_bytes, static_cast<size_t>(chunk_bytes));
-    worker->ring_in->Recv(buf + ri * chunk_bytes, static_cast<size_t>(chunk_bytes));
+    RingExchange(worker, buf + si * chunk_bytes, chunk_bytes, buf + ri * chunk_bytes,
+                 chunk_bytes);
   }
 }
 

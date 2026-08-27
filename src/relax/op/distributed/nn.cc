@@ -63,7 +63,6 @@ Type InferDistTypeLayerNorm(const Call& call, const BlockBuilder& ctx) {
   if (NormCheckDtypeAndShape(call, ctx, input_tys, attrs->axes)) {
     TVM_FFI_VISIT_THROW(ValueError, call) << "Input of distributed operator must have known shape";
   }
-  // The output keeps the data type verbatim; only the placement is recomputed.
   return InferShardingSpec(call, ctx, input_tys[0], distributed::BuildAxisGraphLayerNorm);
 }
 

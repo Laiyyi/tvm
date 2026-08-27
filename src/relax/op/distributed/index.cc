@@ -33,8 +33,6 @@ Type InferDistTypeTake(const Call& call, const BlockBuilder& ctx) {
   ffi::Array<distributed::DTensorType> input_dtensor_tys = GetInputDTensorType(call, ctx);
   TensorType data_ty = input_dtensor_tys[0]->tensor_ty;
 
-  // The indices may be a scalar PrimValue rather than a tensor, which is equivalent to a 0-d
-  // tensor.
   TensorType indices_ty = [&]() {
     Expr arg = call->args[1];
     if (const auto* dtensor_ty = GetTypeAs<distributed::DTensorTypeNode>(arg)) {
@@ -71,7 +69,6 @@ Type InferDistTypeTake(const Call& call, const BlockBuilder& ctx) {
   if (data_shape == nullptr || indices_shape == nullptr) {
     TVM_FFI_VISIT_THROW(ValueError, call) << "Input of distributed operator must have known shape";
   }
-  // The gathered axis is replaced by all the axes of the indices.
   ffi::Array<PrimExpr> out_shape;
   for (int i = 0; i < data_ty->ndim; i++) {
     if (i == axis) {
