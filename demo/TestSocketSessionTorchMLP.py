@@ -59,7 +59,7 @@ class CCLOps:
 parser = argparse.ArgumentParser()
 parser.add_argument("--num-nodes", type=int, default=4)
 parser.add_argument("--num-workers-per-node", type=int, default=1)
-parser.add_argument("--host", default="192.168.50.169")
+parser.add_argument("--host", default="127.0.0.1")
 # parser.add_argument("--host", default="127.0.0.1")
 parser.add_argument("--port", type=int, default=18000)
 parser.add_argument("--build-ring", type=lambda s: s.lower() in ("1", "true", "yes"), default=True)

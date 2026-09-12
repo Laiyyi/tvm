@@ -27,7 +27,7 @@ class CCLOps:
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--host", default="192.168.50.169")
+parser.add_argument("--host", default="127.0.0.1")
 parser.add_argument("--port", type=int, default=18000)
 args = parser.parse_args()
 
