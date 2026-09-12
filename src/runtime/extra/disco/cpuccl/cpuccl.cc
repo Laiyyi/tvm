@@ -156,8 +156,8 @@ void AllReduce(Tensor send, ReduceKind reduce_kind, bool /*in_group*/, Tensor re
     int64_t r_size = std::min(chunk_bytes, bytes - r_off);
     if (s_size <= 0 || r_size <= 0) continue;
 
-    worker->ring_out->Send(buf + s_off, static_cast<size_t>(s_size));
-    worker->ring_in->Recv(tmp.data(), static_cast<size_t>(r_size));
+    worker->ring_out->SendRecv(buf + s_off, static_cast<size_t>(s_size), *worker->ring_in,
+                               tmp.data(), static_cast<size_t>(r_size));
     ReduceBytes(buf + r_off, tmp.data(), r_size / dtype_bytes, dtype, acc_kind);
   }
 
@@ -171,8 +171,8 @@ void AllReduce(Tensor send, ReduceKind reduce_kind, bool /*in_group*/, Tensor re
     int64_t r_size = std::min(chunk_bytes, bytes - r_off);
     if (s_size <= 0 || r_size <= 0) continue;
 
-    worker->ring_out->Send(buf + s_off, static_cast<size_t>(s_size));
-    worker->ring_in->Recv(buf + r_off, static_cast<size_t>(r_size));
+    worker->ring_out->SendRecv(buf + s_off, static_cast<size_t>(s_size), *worker->ring_in,
+                               buf + r_off, static_cast<size_t>(r_size));
   }
 
   if (reduce_kind == ReduceKind::kAvg) {
@@ -201,8 +201,9 @@ void AllGather(Tensor send, bool /*in_group*/, Tensor recv) {
     int si = ((rank - r) % num_workers + num_workers) % num_workers;
     int ri = ((rank - r - 1) % num_workers + num_workers) % num_workers;
 
-    worker->ring_out->Send(buf + si * chunk_bytes, static_cast<size_t>(chunk_bytes));
-    worker->ring_in->Recv(buf + ri * chunk_bytes, static_cast<size_t>(chunk_bytes));
+    worker->ring_out->SendRecv(buf + si * chunk_bytes, static_cast<size_t>(chunk_bytes),
+                               *worker->ring_in, buf + ri * chunk_bytes,
+                               static_cast<size_t>(chunk_bytes));
   }
 }
 

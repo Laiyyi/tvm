@@ -76,13 +76,16 @@
 #include <tvm/ffi/container/shape.h>
 #include <tvm/ffi/function.h>
 #include <tvm/runtime/tensor.h>
+#include <sys/select.h>
+#include <unistd.h>
 
+#include <algorithm>
+#include <cerrno>
+#include <cstring>
 #include <mutex>
 #include <queue>
 #include <string>
 #include <utility>
-
-#include <unistd.h>
 
 namespace tvm {
 namespace runtime {
@@ -385,7 +388,71 @@ class DiscoRingChannel {
     return n;
   }
 
-  void Close() { if (fd_ >= 0) { ::close(fd_); fd_ = -1; } }
+
+  /*!
+   * \brief Send on this channel while concurrently receiving on `in`.
+   *
+   * A ring collective typically has every worker call Send() before Recv() in
+   * the same step. If a payload is larger than the pipe/socket buffer, a
+   * naive blocking Send() stalls waiting for the downstream neighbor to
+   * drain it, but that neighbor is itself stalled in its own Send() and never
+   * reaches Recv() to do the draining -- a circular wait across the whole
+   * ring. Interleaving partial reads/writes via select() lets both
+   * directions make progress independently of payload size, so no worker is
+   * ever left unable to drain its peer.
+   */
+  void SendRecv(const void* send_data, size_t send_size, DiscoRingChannel& in, void* recv_data,
+                size_t recv_size) {
+    const char* wp = static_cast<const char*>(send_data);
+    char* rp = static_cast<char*>(recv_data);
+    size_t send_left = send_size;
+    size_t recv_left = recv_size;
+
+    while (send_left > 0 || recv_left > 0) {
+      fd_set rfds, wfds;
+      FD_ZERO(&rfds);
+      FD_ZERO(&wfds);
+      int maxfd = -1;
+      if (recv_left > 0) {
+        FD_SET(in.fd_, &rfds);
+        maxfd = std::max(maxfd, in.fd_);
+      }
+      if (send_left > 0) {
+        FD_SET(fd_, &wfds);
+        maxfd = std::max(maxfd, fd_);
+      }
+
+      int ret;
+      do {
+        ret = ::select(maxfd + 1, recv_left > 0 ? &rfds : nullptr, send_left > 0 ? &wfds : nullptr,
+                        nullptr, nullptr);
+      } while (ret < 0 && errno == EINTR);
+      TVM_FFI_ICHECK_GE(ret, 0) << "DiscoRingChannel::SendRecv select failed: "
+                                << std::strerror(errno);
+
+      if (recv_left > 0 && FD_ISSET(in.fd_, &rfds)) {
+        ssize_t n = in.ReadSome(rp, recv_left);
+        TVM_FFI_ICHECK_GT(n, 0) << "DiscoRingChannel::SendRecv recv failed: "
+                                 << std::strerror(errno);
+        rp += n;
+        recv_left -= static_cast<size_t>(n);
+      }
+      if (send_left > 0 && FD_ISSET(fd_, &wfds)) {
+        ssize_t n = WriteSome(wp, send_left);
+        TVM_FFI_ICHECK_GT(n, 0) << "DiscoRingChannel::SendRecv send failed: "
+                                << std::strerror(errno);
+        wp += n;
+        send_left -= static_cast<size_t>(n);
+      }
+    }
+  }
+
+  void Close() {
+    if (fd_ >= 0) {
+      ::close(fd_);
+      fd_ = -1;
+    }
+  }
 
   private:
    int fd_;
