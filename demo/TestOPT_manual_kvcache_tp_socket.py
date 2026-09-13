@@ -309,179 +309,179 @@ tp_kv_mod = build_tp_kv_module()
 tp_kv_mod.show()
 
 
-# lib_tp_kv = tvm.compile(tp_kv_mod, target=target)
-# so_path = os.path.join(tempfile.mkdtemp(), "opt125m_tp_kv_socket.so")
-# lib_tp_kv.export_library(so_path)
+lib_tp_kv = tvm.compile(tp_kv_mod, target=target)
+so_path = os.path.join(tempfile.mkdtemp(), "opt125m_tp_kv_socket.so")
+lib_tp_kv.export_library(so_path)
 
 
 
-# # ---- disco 
-# from tvm.runtime import disco as di
+# ---- disco 
+from tvm.runtime import disco as di
 
-# num_remote = args.num_nodes - 1
-# print("=" * 60)
-# print(f"NUM_WORKERS = {NUM_WORKERS}  (num_nodes={args.num_nodes} x "
-#       f"num_workers_per_node={args.num_workers_per_node})")
-# print("=" * 60, flush=True)
+num_remote = args.num_nodes - 1
+print("=" * 60)
+print(f"NUM_WORKERS = {NUM_WORKERS}  (num_nodes={args.num_nodes} x "
+      f"num_workers_per_node={args.num_workers_per_node})")
+print("=" * 60, flush=True)
 
-# sess = di.SocketSession(
-#     args.num_nodes, args.num_workers_per_node, args.num_groups, args.host, args.port, args.build_ring
-# )
-# sess.init_ccl(CCL, *range(NUM_WORKERS))
+sess = di.SocketSession(
+    args.num_nodes, args.num_workers_per_node, args.num_groups, args.host, args.port, args.build_ring
+)
+sess.init_ccl(CCL, *range(NUM_WORKERS))
 
-# sess.upload_vm_module(so_path)
-# sess._sync_all()
-# dmod = sess.load_vm_module(so_path)
-# print(f"Disco Run ! SocketSession {args.num_nodes}x{args.num_workers_per_node}, ccl={CCL}")
-
-
-# def upload_shared(shape, dtype, value):
-#     d = sess.empty(shape, dtype)
-#     for r in range(NUM_WORKERS):
-#         d.debug_copy_from(r, value)
-#     return d
+sess.upload_vm_module(so_path)
+sess._sync_all()
+dmod = sess.load_vm_module(so_path)
+print(f"Disco Run ! SocketSession {args.num_nodes}x{args.num_workers_per_node}, ccl={CCL}")
 
 
-# def upload_sharded(shape, dtype, value_per_rank):
-#     d = sess.empty(shape, dtype)
-#     for r in range(NUM_WORKERS):
-#         d.debug_copy_from(r, value_per_rank[r])
-#     return d
+def upload_shared(shape, dtype, value):
+    d = sess.empty(shape, dtype)
+    for r in range(NUM_WORKERS):
+        d.debug_copy_from(r, value)
+    return d
 
 
-# d_weights = [
-#     upload_shared((cfg.vocab_size, HIDDEN), DTYPE, shared_weights["embed_tokens_w"]),
-#     upload_shared((MAX_POS, HIDDEN), DTYPE, shared_weights["embed_positions_w"]),
-# ]
-# for l in range(NUM_HIDDEN_LAYERS):
-#     ls, lr = per_layer_shared[l], per_layer_sharded[l]
-#     d_weights += [
-#         upload_shared((HIDDEN,), DTYPE, ls["ln1_w"]),
-#         upload_shared((HIDDEN,), DTYPE, ls["ln1_b"]),
-#         upload_sharded((LOCAL_HIDDEN, HIDDEN), DTYPE, {r: lr[r]["q_w"] for r in range(NUM_WORKERS)}),
-#         upload_sharded((LOCAL_HIDDEN,), DTYPE, {r: lr[r]["q_b"] for r in range(NUM_WORKERS)}),
-#         upload_sharded((LOCAL_HIDDEN, HIDDEN), DTYPE, {r: lr[r]["k_w"] for r in range(NUM_WORKERS)}),
-#         upload_sharded((LOCAL_HIDDEN,), DTYPE, {r: lr[r]["k_b"] for r in range(NUM_WORKERS)}),
-#         upload_sharded((LOCAL_HIDDEN, HIDDEN), DTYPE, {r: lr[r]["v_w"] for r in range(NUM_WORKERS)}),
-#         upload_sharded((LOCAL_HIDDEN,), DTYPE, {r: lr[r]["v_b"] for r in range(NUM_WORKERS)}),
-#         upload_sharded((HIDDEN, LOCAL_HIDDEN), DTYPE, {r: lr[r]["out_w"] for r in range(NUM_WORKERS)}),
-#         upload_shared((HIDDEN,), DTYPE, ls["out_b"]),
-#         upload_shared((HIDDEN,), DTYPE, ls["ln2_w"]),
-#         upload_shared((HIDDEN,), DTYPE, ls["ln2_b"]),
-#         upload_sharded((LOCAL_FFN, HIDDEN), DTYPE, {r: lr[r]["fc1_w"] for r in range(NUM_WORKERS)}),
-#         upload_sharded((LOCAL_FFN,), DTYPE, {r: lr[r]["fc1_b"] for r in range(NUM_WORKERS)}),
-#         upload_sharded((HIDDEN, LOCAL_FFN), DTYPE, {r: lr[r]["fc2_w"] for r in range(NUM_WORKERS)}),
-#         upload_shared((HIDDEN,), DTYPE, ls["fc2_b"]),
-#     ]
-# d_weights += [
-#     upload_shared((HIDDEN,), DTYPE, shared_weights["final_ln_w"]),
-#     upload_shared((HIDDEN,), DTYPE, shared_weights["final_ln_b"]),
-# ]
-
-# sess._sync_all()
+def upload_sharded(shape, dtype, value_per_rank):
+    d = sess.empty(shape, dtype)
+    for r in range(NUM_WORKERS):
+        d.debug_copy_from(r, value_per_rank[r])
+    return d
 
 
-# # PagedKVCache 的生命週期管理：cache 建一次，之後每步用 begin/end_forward 包住 main。
-# # 這幾個都是註冊在 runtime 的 global func，跟之前的 tuple_getitem 一樣透過 session
-# # 取得後直接呼叫，會自動 dispatch 到每個 worker（各自操作自己那份 cache）。
-# fadd_sequence = sess.get_global_func("vm.builtin.kv_state_add_sequence")
-# fbegin_forward = sess.get_global_func("vm.builtin.kv_state_begin_forward")
-# fend_forward = sess.get_global_func("vm.builtin.kv_state_end_forward")
+d_weights = [
+    upload_shared((cfg.vocab_size, HIDDEN), DTYPE, shared_weights["embed_tokens_w"]),
+    upload_shared((MAX_POS, HIDDEN), DTYPE, shared_weights["embed_positions_w"]),
+]
+for l in range(NUM_HIDDEN_LAYERS):
+    ls, lr = per_layer_shared[l], per_layer_sharded[l]
+    d_weights += [
+        upload_shared((HIDDEN,), DTYPE, ls["ln1_w"]),
+        upload_shared((HIDDEN,), DTYPE, ls["ln1_b"]),
+        upload_sharded((LOCAL_HIDDEN, HIDDEN), DTYPE, {r: lr[r]["q_w"] for r in range(NUM_WORKERS)}),
+        upload_sharded((LOCAL_HIDDEN,), DTYPE, {r: lr[r]["q_b"] for r in range(NUM_WORKERS)}),
+        upload_sharded((LOCAL_HIDDEN, HIDDEN), DTYPE, {r: lr[r]["k_w"] for r in range(NUM_WORKERS)}),
+        upload_sharded((LOCAL_HIDDEN,), DTYPE, {r: lr[r]["k_b"] for r in range(NUM_WORKERS)}),
+        upload_sharded((LOCAL_HIDDEN, HIDDEN), DTYPE, {r: lr[r]["v_w"] for r in range(NUM_WORKERS)}),
+        upload_sharded((LOCAL_HIDDEN,), DTYPE, {r: lr[r]["v_b"] for r in range(NUM_WORKERS)}),
+        upload_sharded((HIDDEN, LOCAL_HIDDEN), DTYPE, {r: lr[r]["out_w"] for r in range(NUM_WORKERS)}),
+        upload_shared((HIDDEN,), DTYPE, ls["out_b"]),
+        upload_shared((HIDDEN,), DTYPE, ls["ln2_w"]),
+        upload_shared((HIDDEN,), DTYPE, ls["ln2_b"]),
+        upload_sharded((LOCAL_FFN, HIDDEN), DTYPE, {r: lr[r]["fc1_w"] for r in range(NUM_WORKERS)}),
+        upload_sharded((LOCAL_FFN,), DTYPE, {r: lr[r]["fc1_b"] for r in range(NUM_WORKERS)}),
+        upload_sharded((HIDDEN, LOCAL_FFN), DTYPE, {r: lr[r]["fc2_w"] for r in range(NUM_WORKERS)}),
+        upload_shared((HIDDEN,), DTYPE, ls["fc2_b"]),
+    ]
+d_weights += [
+    upload_shared((HIDDEN,), DTYPE, shared_weights["final_ln_w"]),
+    upload_shared((HIDDEN,), DTYPE, shared_weights["final_ln_b"]),
+]
 
-# kv_cache = dmod["create_tir_paged_kv_cache"]()
-# fadd_sequence(kv_cache, SEQ_ID)
-# sess._sync_all()
-# print("PagedKVCache created + sequence added", flush=True)
-
-
-# def tp_kv_step(token_id: int, pos: int):
-#     """跑一步 1 個 token 回傳 logits numpy (1,1,VOCAB)。
-
-#     cache 是 in-place 更新的，不用像手刻版那樣把 24 個 tensor 傳進傳出。
-#     每步前後都印時間戳、flush=True 卡住時最後一行就是卡住的那一步。
-#     """
-#     t0 = time.time()
-#     d_ids = sess.empty((1, 1), "int64")
-#     d_ids.debug_copy_from(0, np.array([[token_id]], dtype="int64"))
-#     d_pos = sess.empty((1,), "int64")
-#     for r in range(NUM_WORKERS):
-#         d_pos.debug_copy_from(r, np.array([pos], dtype="int64"))
-#     print(f"    [step pos={pos}] d_ids/d_pos uploaded ({time.time() - t0:.2f}s)", flush=True)
-
-#     t1 = time.time()
-#     print(f"    [step pos={pos}] begin_forward ...", flush=True)
-#     fbegin_forward(kv_cache, Shape([SEQ_ID]), Shape([1]))  # 這一步要 append 1 個 token
-
-#     print(f"    [step pos={pos}] calling dmod['main'] ...", flush=True)
-#     logits_dref = dmod["main"](d_ids, d_pos, *d_weights, kv_cache)
-
-#     fend_forward(kv_cache)
-#     print(f"    [step pos={pos}] main + end_forward done ({time.time() - t1:.2f}s)", flush=True)
-
-#     t2 = time.time()
-#     got_nd = tvm.runtime.empty((1, 1, cfg.vocab_size), "float32", device=dev)
-#     sess.copy_from_worker_0(got_nd, logits_dref)
-#     sess._sync_all()
-#     print(f"    [step pos={pos}] copy back done ({time.time() - t2:.2f}s), "
-#           f"total {time.time() - t0:.2f}s", flush=True)
-#     return got_nd.numpy()
+sess._sync_all()
 
 
-# tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m")
-# prompt = "The capital of France is"
-# prompt_ids = tokenizer(prompt)["input_ids"]
-# MAX_NEW_TOKENS = 8
-# REPETITION_PENALTY = 1.3  # >1：對已經出現過的 token 打折扣，避免一直重複同一句
+# PagedKVCache 的生命週期管理：cache 建一次，之後每步用 begin/end_forward 包住 main。
+# 這幾個都是註冊在 runtime 的 global func，跟之前的 tuple_getitem 一樣透過 session
+# 取得後直接呼叫，會自動 dispatch 到每個 worker（各自操作自己那份 cache）。
+fadd_sequence = sess.get_global_func("vm.builtin.kv_state_add_sequence")
+fbegin_forward = sess.get_global_func("vm.builtin.kv_state_begin_forward")
+fend_forward = sess.get_global_func("vm.builtin.kv_state_end_forward")
+
+kv_cache = dmod["create_tir_paged_kv_cache"]()
+fadd_sequence(kv_cache, SEQ_ID)
+sess._sync_all()
+print("PagedKVCache created + sequence added", flush=True)
 
 
-# def sample_next(logits_row: np.ndarray, generated: list) -> int:
-#     """貪婪取樣 + repetition penalty。
+def tp_kv_step(token_id: int, pos: int):
+    """跑一步 1 個 token 回傳 logits numpy (1,1,VOCAB)。
 
-#     TP 跟 ref 兩邊一定要用同一套取樣邏輯，否則最後的逐 token 比對會因為取樣方式
-#     不同而失敗（那是取樣差異，不是計算錯誤）。
-#     """
-#     row = np.asarray(logits_row, dtype="float32").copy()
-#     for tok_id in set(generated):
-#         if row[tok_id] > 0:
-#             row[tok_id] /= REPETITION_PENALTY
-#         else:
-#             row[tok_id] *= REPETITION_PENALTY
-#     return int(np.argmax(row))
+    cache 是 in-place 更新的，不用像手刻版那樣把 24 個 tensor 傳進傳出。
+    每步前後都印時間戳、flush=True 卡住時最後一行就是卡住的那一步。
+    """
+    t0 = time.time()
+    d_ids = sess.empty((1, 1), "int64")
+    d_ids.debug_copy_from(0, np.array([[token_id]], dtype="int64"))
+    d_pos = sess.empty((1,), "int64")
+    for r in range(NUM_WORKERS):
+        d_pos.debug_copy_from(r, np.array([pos], dtype="int64"))
+    print(f"    [step pos={pos}] d_ids/d_pos uploaded ({time.time() - t0:.2f}s)", flush=True)
+
+    t1 = time.time()
+    print(f"    [step pos={pos}] begin_forward ...", flush=True)
+    fbegin_forward(kv_cache, Shape([SEQ_ID]), Shape([1]))  # 這一步要 append 1 個 token
+
+    print(f"    [step pos={pos}] calling dmod['main'] ...", flush=True)
+    logits_dref = dmod["main"](d_ids, d_pos, *d_weights, kv_cache)
+
+    fend_forward(kv_cache)
+    print(f"    [step pos={pos}] main + end_forward done ({time.time() - t1:.2f}s)", flush=True)
+
+    t2 = time.time()
+    got_nd = tvm.runtime.empty((1, 1, cfg.vocab_size), "float32", device=dev)
+    sess.copy_from_worker_0(got_nd, logits_dref)
+    sess._sync_all()
+    print(f"    [step pos={pos}] copy back done ({time.time() - t2:.2f}s), "
+          f"total {time.time() - t0:.2f}s", flush=True)
+    return got_nd.numpy()
 
 
-# print(f"prompt: {prompt!r} -> {len(prompt_ids)} tokens")
+tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m")
+prompt = "The capital of France is"
+prompt_ids = tokenizer(prompt)["input_ids"]
+MAX_NEW_TOKENS = 8
+REPETITION_PENALTY = 1.3  # >1：對已經出現過的 token 打折扣，避免一直重複同一句
 
-# generated_tp = list(prompt_ids)
-# print(f"[TP]  {tokenizer.decode(generated_tp)!r}")
-# for pos, token_id in enumerate(prompt_ids):
-#     logits = tp_kv_step(token_id, pos)
-# next_pos = len(prompt_ids)
-# for _ in range(MAX_NEW_TOKENS):
-#     if next_pos >= MAX_CACHE_LEN:
-#         break
-#     next_token = sample_next(logits[0, -1], generated_tp)
-#     generated_tp.append(next_token)
-#     print(f"[TP]  + {next_token:6d} {tokenizer.decode([next_token])!r}  -> {tokenizer.decode(generated_tp)!r}")
-#     if next_token == tokenizer.eos_token_id:
-#         break
-#     logits = tp_kv_step(next_token, next_pos)
-#     next_pos += 1
 
-# sess.shutdown()
+def sample_next(logits_row: np.ndarray, generated: list) -> int:
+    """貪婪取樣 + repetition penalty。
 
-# generated_ref = list(prompt_ids)
-# print(f"[ref] {tokenizer.decode(generated_ref)!r}")
-# with torch.no_grad():
-#     for _ in range(MAX_NEW_TOKENS):
-#         logits_ref = model(input_ids=torch.tensor([generated_ref]), use_cache=False).logits
-#         next_token = sample_next(logits_ref[0, -1].numpy(), generated_ref)
-#         generated_ref.append(next_token)
-#         print(f"[ref] + {next_token:6d} {tokenizer.decode([next_token])!r}  -> {tokenizer.decode(generated_ref)!r}")
-#         if next_token == tokenizer.eos_token_id:
-#             break
+    TP 跟 ref 兩邊一定要用同一套取樣邏輯，否則最後的逐 token 比對會因為取樣方式
+    不同而失敗（那是取樣差異，不是計算錯誤）。
+    """
+    row = np.asarray(logits_row, dtype="float32").copy()
+    for tok_id in set(generated):
+        if row[tok_id] > 0:
+            row[tok_id] /= REPETITION_PENALTY
+        else:
+            row[tok_id] *= REPETITION_PENALTY
+    return int(np.argmax(row))
 
-# print()
-# print(f"[TP]  最終生成: {tokenizer.decode(generated_tp)!r}")
-# print(f"[ref] 最終生成: {tokenizer.decode(generated_ref)!r}")
-# assert generated_tp == generated_ref, f"TP 跟單機生成的 token 不一致！\nTP : {generated_tp}\nref: {generated_ref}"
-# print(f"OK: TP={NUM_WORKERS}（SocketSession）+ KV cache 生成結果跟單機完全一致")
+
+print(f"prompt: {prompt!r} -> {len(prompt_ids)} tokens")
+
+generated_tp = list(prompt_ids)
+print(f"[TP]  {tokenizer.decode(generated_tp)!r}")
+for pos, token_id in enumerate(prompt_ids):
+    logits = tp_kv_step(token_id, pos)
+next_pos = len(prompt_ids)
+for _ in range(MAX_NEW_TOKENS):
+    if next_pos >= MAX_CACHE_LEN:
+        break
+    next_token = sample_next(logits[0, -1], generated_tp)
+    generated_tp.append(next_token)
+    print(f"[TP]  + {next_token:6d} {tokenizer.decode([next_token])!r}  -> {tokenizer.decode(generated_tp)!r}")
+    if next_token == tokenizer.eos_token_id:
+        break
+    logits = tp_kv_step(next_token, next_pos)
+    next_pos += 1
+
+sess.shutdown()
+
+generated_ref = list(prompt_ids)
+print(f"[ref] {tokenizer.decode(generated_ref)!r}")
+with torch.no_grad():
+    for _ in range(MAX_NEW_TOKENS):
+        logits_ref = model(input_ids=torch.tensor([generated_ref]), use_cache=False).logits
+        next_token = sample_next(logits_ref[0, -1].numpy(), generated_ref)
+        generated_ref.append(next_token)
+        print(f"[ref] + {next_token:6d} {tokenizer.decode([next_token])!r}  -> {tokenizer.decode(generated_ref)!r}")
+        if next_token == tokenizer.eos_token_id:
+            break
+
+print()
+print(f"[TP]  最終生成: {tokenizer.decode(generated_tp)!r}")
+print(f"[ref] 最終生成: {tokenizer.decode(generated_ref)!r}")
+assert generated_tp == generated_ref, f"TP 跟單機生成的 token 不一致！\nTP : {generated_tp}\nref: {generated_ref}"
+print(f"OK: TP={NUM_WORKERS}（SocketSession）+ KV cache 生成結果跟單機完全一致")
