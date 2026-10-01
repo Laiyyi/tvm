@@ -63,18 +63,18 @@ constexpr size_t kProxyBufSize = 64 * 1024;
 
 void ProxyLoop(DiscoRingChannel* src, DiscoRingChannel* dst, std::string tag) {
 
-  LOG(INFO) << "[Proxy " << tag << "] entering, src=" << src << " dst=" << dst;
+  DLOG(INFO) << "[Proxy " << tag << "] entering, src=" << src << " dst=" << dst;
   std::vector<char> buf(kProxyBufSize);
 
   while (true) {
     ssize_t n = src->ReadSome(buf.data(), buf.size());
     if (n <= 0) { LOG(INFO) << "[Proxy " << tag << "] src closed (n=" << n << "), exit"; return; }
-    LOG(INFO) << "[Proxy " << tag << "] transfer " << n << " bytes";
+    DLOG(INFO) << "[Proxy " << tag << "] transfer " << n << " bytes";
 
     ssize_t written = 0;
     while (written < n) {
       ssize_t w = dst->WriteSome(buf.data() + written, n - written);
-      if (w <= 0) { LOG(INFO) << "[Proxy " << tag << "] dst failed (w=" << w << "), exit"; return; }
+      if (w <= 0) { DLOG(INFO) << "[Proxy " << tag << "] dst failed (w=" << w << "), exit"; return; }
       written += w;
     }
   }

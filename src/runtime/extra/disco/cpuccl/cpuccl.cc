@@ -128,6 +128,10 @@ void AllReduce(Tensor send, ReduceKind reduce_kind, bool /*in_group*/, Tensor re
   int num_workers = worker->num_workers;
   int rank = worker->worker_id;
   int64_t numel = send.Shape().Product();
+
+  DLOG(INFO) << "[cpuccl] allreduce rank=" << rank << "/" << num_workers
+            << " shape=" << send.Shape() << " dtype=" << dtype
+            << " bytes=" << numel * dtype_bytes << " op=" << static_cast<int>(reduce_kind);
   int64_t bytes = numel * dtype_bytes;
 
   std::memcpy(recv->data, send->data, static_cast<size_t>(bytes));
@@ -193,6 +197,10 @@ void AllGather(Tensor send, bool /*in_group*/, Tensor recv) {
   int64_t chunk_bytes = send.Shape().Product() * DTypeBytes(send->dtype);
   char* buf = static_cast<char*>(recv->data);
 
+  DLOG(INFO) << "[cpuccl] allgather rank=" << rank << "/" << num_workers
+            << " send=" << send.Shape() << " recv=" << recv.Shape()
+            << " dtype=" << send->dtype << " chunk_bytes=" << chunk_bytes;
+
   std::memcpy(buf + rank * chunk_bytes, send->data, static_cast<size_t>(chunk_bytes));
 
   if (num_workers == 1) return;
@@ -218,6 +226,10 @@ void BroadcastFromWorker0(ffi::Optional<Tensor> send, bool /*in_group*/, Tensor 
   int rank = worker->worker_id;
   int num_workers = worker->num_workers;
   int64_t bytes = recv.Shape().Product() * DTypeBytes(recv->dtype);
+
+  DLOG(INFO) << "[cpuccl] broadcast rank=" << rank << "/" << num_workers
+            << " recv=" << recv.Shape() << " dtype=" << recv->dtype
+            << " bytes=" << bytes << " has_send=" << send.has_value();
 
   if (rank == 0) {
     TVM_FFI_CHECK(send.has_value(), ValueError)
@@ -247,6 +259,10 @@ void ScatterFromWorker0(ffi::Optional<Tensor> send, bool /*in_group*/, Tensor re
   int rank = worker->worker_id;
   int num_workers = worker->num_workers;
   int64_t recv_bytes = recv.Shape().Product() * DTypeBytes(recv->dtype);
+
+  DLOG(INFO) << "[cpuccl] scatter rank=" << rank << "/" << num_workers
+            << " recv=" << recv.Shape() << " dtype=" << recv->dtype
+            << " recv_bytes=" << recv_bytes << " has_send=" << send.has_value();
 
   if (num_workers == 1) {
     TVM_FFI_CHECK(send.has_value(), ValueError)
@@ -286,6 +302,10 @@ void GatherToWorker0(Tensor send, bool /*in_group*/, ffi::Optional<Tensor> recv)
   int rank = worker->worker_id;
   int num_workers = worker->num_workers;
   int64_t chunk_bytes = send.Shape().Product() * DTypeBytes(send->dtype);
+
+  DLOG(INFO) << "[cpuccl] gather rank=" << rank << "/" << num_workers
+            << " send=" << send.Shape() << " dtype=" << send->dtype
+            << " chunk_bytes=" << chunk_bytes << " has_recv=" << recv.has_value();
 
   if (num_workers == 1) {
     TVM_FFI_CHECK(recv.has_value(), ValueError)
