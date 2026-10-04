@@ -319,7 +319,8 @@ class Session : public ffi::ObjectRef {
    */
   TVM_RUNTIME_DLL static Session ProcessSession(int num_workers, int num_groups,
                                                 ffi::String process_pool_creator,
-                                                ffi::String entrypoint, bool build_ring);
+                                                ffi::String entrypoint,
+                                                bool build_ring);
 
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(Session, ffi::ObjectRef, SessionObj);
 };
@@ -356,12 +357,9 @@ class DiscoRingChannel {
     const char* write_data = static_cast<const char*>(data);
     while (size > 0) {
       ssize_t n;
-      do {
-        n = ::write(fd_, write_data, size);
-      } while (n < 0 && errno == EINTR);
+      do { n = ::write(fd_, write_data, size); } while (n < 0 && errno == EINTR);
       TVM_FFI_ICHECK_GT(n, 0) << "DiscoRingChannel::Send failed: " << std::strerror(errno);
-      write_data += n;
-      size -= n;
+      write_data += n; size -= n;
     }
   }
 
@@ -369,32 +367,27 @@ class DiscoRingChannel {
     char* read_data = static_cast<char*>(data);
     while (size > 0) {
       ssize_t n;
-      do {
-        n = ::read(fd_, read_data, size);
-      } while (n < 0 && errno == EINTR);
+      do { n = ::read(fd_, read_data, size); } while (n < 0 && errno == EINTR);
       TVM_FFI_ICHECK_GT(n, 0) << "DiscoRingChannel::Recv failed: " << std::strerror(errno);
-      read_data += n;
-      size -= n;
+      read_data += n; size -= n;
     }
   }
+
 
   ssize_t ReadSome(void* data, size_t max_size) {
     if (fd_ < 0) return 0;
     ssize_t n;
-    do {
-      n = ::read(fd_, data, max_size);
-    } while (n < 0 && errno == EINTR);
+    do { n = ::read(fd_, data, max_size); } while (n < 0 && errno == EINTR);
     return n;
   }
 
   ssize_t WriteSome(const void* data, size_t size) {
     if (fd_ < 0) return -1;
     ssize_t n;
-    do {
-      n = ::write(fd_, data, size);
-    } while (n < 0 && errno == EINTR);
+    do { n = ::write(fd_, data, size); } while (n < 0 && errno == EINTR);
     return n;
   }
+
 
   /*!
    * \brief Send on this channel while concurrently receiving on `in`.
@@ -461,9 +454,10 @@ class DiscoRingChannel {
     }
   }
 
- private:
-  int fd_;
+  private:
+   int fd_;
 };
+
 
 /*!
  * \brief A special communication channel between controler and worker-0,
