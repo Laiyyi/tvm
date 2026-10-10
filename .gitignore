@@ -295,3 +295,9 @@ python/bin/
 python/typing_extensions.py
 python/*.dist-info/
 pytest-of-bohanhou/
+
+#demo model file
+demo/llama31_8B
+demo/llama32_1b
+#demo real file
+demo/no*.py
