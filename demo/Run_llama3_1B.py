@@ -168,6 +168,33 @@ assert _need <= MAX_PAST, (
     f"或在 build 端加大 MAX_PAST 重編"
 )
 
+CCL_OP_NAMES = {0: "allreduce", 1: "allgather", 2: "broadcast",
+                3: "scatter", 4: "gather"}
+LINK_OP_NAMES = {0: "send", 1: "recv"}
+
+
+def resolve_counter(name):
+    try:
+        func = sess.get_global_func(name)
+        func()
+        return func
+    except Exception:                       # pylint: disable=broad-except
+        return None
+
+
+def read_triples(handle, worker):
+    flat = list(handle().debug_get_from_remote(worker))
+    return [tuple(flat[i:i + 3]) for i in range(0, len(flat), 3)]
+
+
+ccl_records = resolve_counter("runtime.disco.ccl_timer.records")
+link_records = resolve_counter("runtime.disco.ccl_timer.link_records")
+if ccl_records is None or link_records is None:
+    print("  ccl_timer 不在 worker 的 runtime 裡，節點需要重建 tvm_runtime_extra",
+          flush=True)
+else:
+    sess.get_global_func("runtime.disco.ccl_timer.reset")()
+
 print("generating ...", flush=True)
 
 stop_reason = "?"
@@ -218,5 +245,62 @@ while True:
 
 print(f"\n\n[stop] {stop_reason}")
 print(tokenizer.decode(generated))
+
+US = 1e3
+MS = 1e6
+
+
+def percentile(sorted_values, ratio):
+    return sorted_values[min(int(len(sorted_values) * ratio), len(sorted_values) - 1)]
+
+
+if ccl_records is not None:
+    print(f"\n[collective] 每次呼叫一筆，"
+          f"{len(generated) - len(prompt_ids)} 個生成 token")
+    worker_totals = []
+    for worker in range(TP):
+        rows = read_triples(ccl_records, worker)
+        worker_totals.append(sum(row[2] for row in rows))
+        print(f"  worker {worker}")
+        print(f"    {'op':>10s} {'次數':>6s} {'bytes':>11s} {'總時間':>10s} "
+              f"{'平均':>9s} {'中位':>9s} {'p99':>9s} {'最慢':>9s}")
+        for op_id, op_name in CCL_OP_NAMES.items():
+            selected = sorted(row[2] for row in rows if row[0] == op_id)
+            if not selected:
+                continue
+            total_bytes = sum(row[1] for row in rows if row[0] == op_id)
+            print(f"    {op_name:>10s} {len(selected):6d} {total_bytes:11d} "
+                  f"{sum(selected) / MS:9.2f}ms {sum(selected) / len(selected) / US:8.1f}us "
+                  f"{percentile(selected, 0.5) / US:8.1f}us "
+                  f"{percentile(selected, 0.99) / US:8.1f}us {selected[-1] / US:8.1f}us")
+    low, high = min(worker_totals), max(worker_totals)
+    print(f"  worker 之間 最少 {low / MS:.2f}ms  最多 {high / MS:.2f}ms")
+    print(f"    min     ≈ 純傳輸（最晚到的 worker 等最少）  {low / MS:9.2f}ms")
+    print(f"    max-min ≈ 負載不均的等待                   {(high - low) / MS:9.2f}ms")
+
+if link_records is not None:
+    print(f"\n[tcp] 每個 node 的 TCP 邊界。worker 1/3/5/7 是獨立行程，沒有記錄是正常的")
+    for worker in range(TP):
+        rows = read_triples(link_records, worker)
+        if not rows:
+            continue
+        print(f"  worker {worker}")
+        for op_id, op_name in LINK_OP_NAMES.items():
+            selected = [row for row in rows if row[0] == op_id]
+            if not selected:
+                continue
+            nanos = sum(row[2] for row in selected)
+            nbytes = sum(row[1] for row in selected)
+            line = (f"    {op_name:>4s} {len(selected):6d} 次 {nbytes / 2 ** 20:9.2f}MiB "
+                    f"{nanos / MS:9.2f}ms")
+            if op_id == 0 and nanos > 0:
+                line += f"  有效頻寬 {nbytes / (nanos / 1e9) / 2 ** 20:8.1f} MiB/s"
+            print(line)
+        send_nanos = sum(row[2] for row in rows if row[0] == 0)
+        if ccl_records is not None and low > 0:
+            print(f"    寫 TCP 占 collective {send_nanos / low * 100:.1f}% "
+                  f"-> 高=頻寬受限，低=延遲/不均受限")
+    print("    send = 寫進 socket，接近真實傳送成本")
+    print("    recv = 阻塞在 socket 讀，大部分是等對方，不是傳輸")
 
 sess.shutdown()

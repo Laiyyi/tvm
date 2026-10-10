@@ -29,6 +29,8 @@
 #include <cstring>
 #include <vector>
 
+#include "../ccl_timer.h"
+
 
 namespace tvm {
 namespace runtime {
@@ -133,6 +135,7 @@ void AllReduce(Tensor send, ReduceKind reduce_kind, bool /*in_group*/, Tensor re
             << " shape=" << send.Shape() << " dtype=" << dtype
             << " bytes=" << numel * dtype_bytes << " op=" << static_cast<int>(reduce_kind);
   int64_t bytes = numel * dtype_bytes;
+  ccl_timer::ScopedTimer timer(ccl_timer::kAllReduce, bytes);
 
   std::memcpy(recv->data, send->data, static_cast<size_t>(bytes));
   char* buf = static_cast<char*>(recv->data);
@@ -196,6 +199,7 @@ void AllGather(Tensor send, bool /*in_group*/, Tensor recv) {
   int rank = worker->worker_id;
   int64_t chunk_bytes = send.Shape().Product() * DTypeBytes(send->dtype);
   char* buf = static_cast<char*>(recv->data);
+  ccl_timer::ScopedTimer timer(ccl_timer::kAllGather, chunk_bytes);
 
   DLOG(INFO) << "[cpuccl] allgather rank=" << rank << "/" << num_workers
             << " send=" << send.Shape() << " recv=" << recv.Shape()
@@ -226,6 +230,7 @@ void BroadcastFromWorker0(ffi::Optional<Tensor> send, bool /*in_group*/, Tensor 
   int rank = worker->worker_id;
   int num_workers = worker->num_workers;
   int64_t bytes = recv.Shape().Product() * DTypeBytes(recv->dtype);
+  ccl_timer::ScopedTimer timer(ccl_timer::kBroadcastFromWorker0, bytes);
 
   DLOG(INFO) << "[cpuccl] broadcast rank=" << rank << "/" << num_workers
             << " recv=" << recv.Shape() << " dtype=" << recv->dtype
@@ -259,6 +264,7 @@ void ScatterFromWorker0(ffi::Optional<Tensor> send, bool /*in_group*/, Tensor re
   int rank = worker->worker_id;
   int num_workers = worker->num_workers;
   int64_t recv_bytes = recv.Shape().Product() * DTypeBytes(recv->dtype);
+  ccl_timer::ScopedTimer timer(ccl_timer::kScatterFromWorker0, recv_bytes);
 
   DLOG(INFO) << "[cpuccl] scatter rank=" << rank << "/" << num_workers
             << " recv=" << recv.Shape() << " dtype=" << recv->dtype
@@ -302,6 +308,7 @@ void GatherToWorker0(Tensor send, bool /*in_group*/, ffi::Optional<Tensor> recv)
   int rank = worker->worker_id;
   int num_workers = worker->num_workers;
   int64_t chunk_bytes = send.Shape().Product() * DTypeBytes(send->dtype);
+  ccl_timer::ScopedTimer timer(ccl_timer::kGatherToWorker0, chunk_bytes);
 
   DLOG(INFO) << "[cpuccl] gather rank=" << rank << "/" << num_workers
             << " send=" << send.Shape() << " dtype=" << send->dtype
