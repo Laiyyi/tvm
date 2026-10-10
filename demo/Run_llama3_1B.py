@@ -83,6 +83,13 @@ mod_path = sess.upload_vm_module(os.path.abspath(SO_PATH))
 sess._sync_all()
 vm = sess.load_vm_module(mod_path)
 sess.import_python_module("runDisco.WeightLoader")
+sess.import_python_module("runDisco.Memory")
+worker_memory = sess.get_global_func("runDisco.Memory.usage")
+
+
+def read_memory_usage():
+    handle = worker_memory()
+    return [tuple(handle.debug_get_from_remote(worker)) for worker in range(TP)]
 print("Load vm module done...")
 
 
@@ -124,11 +131,29 @@ with safe_open(WEIGHT_PATH, framework="pt") as safetenosors:
 
 load_worker_weights = sess.get_global_func("runDisco.WeightLoader.load")
 
+memory_before_load = read_memory_usage()
 print("Loading weights on workers...", flush=True)
 weight_array = load_worker_weights(WORKER_WEIGHT_PATH, json.dumps(meta))
 
 tuple_getitem = sess.get_global_func("vm.builtin.tuple_getitem")
 weight_refs = [tuple_getitem(weight_array, index) for index in range(len(WEIGHT_NAMES))]
+memory_after_load = read_memory_usage()
+
+MIB = 2 ** 20
+print(f"  理論權重 {(replicated_bytes + sharded_bytes) / MIB:.0f} MiB/worker")
+print(f"    {'worker':>6s} {'rss':>10s} {'載入增加':>10s}")
+for worker in range(TP):
+    rss_after, _pss_after = memory_after_load[worker]
+    rss_before, _pss_before = memory_before_load[worker]
+    print(f"    {worker:6d} {rss_after / MIB:9.1f}M {(rss_after - rss_before) / MIB:9.1f}M")
+
+# 同一個 node 的兩個 worker 共享 mmap 的檔案頁，rss 相加會重複計算，
+# pss 把共享頁按分攤者除開，所以 node 的實際需求用 pss 加總
+for node in range(NUM_NODES):
+    workers = range(node * WORKERS_PER_NODE, (node + 1) * WORKERS_PER_NODE)
+    node_pss = sum(memory_after_load[worker][1] for worker in workers)
+    print(f"    node {node} 實際需求 {node_pss / MIB:.0f} MiB"
+          f"（worker {list(workers)} 的 pss 加總）")
 print(f"  {len(weight_refs)} weights, "
       f"{(replicated_bytes + sharded_bytes) / 2 ** 30:.2f} GiB/worker "
       f"(replicated {replicated_bytes / 2 ** 30:.2f} + sharded {sharded_bytes / 2 ** 30:.2f})",
@@ -162,14 +187,14 @@ print(f"prompt: {tokenizer.decode(prompt_ids)!r} -> {len(prompt_ids)} tokens")
 
 _need = 1 + len(prompt_ids) + MAX_NEW_TOKENS 
 assert _need <= MAX_PAST, (
-    f"cache 不夠 dummy 1 + prompt {len(prompt_ids)} + MAX_NEW_TOKENS {MAX_NEW_TOKENS} "
+    f"cache not enough : dummy 1 + prompt {len(prompt_ids)} + MAX_NEW_TOKENS {MAX_NEW_TOKENS} "
     f"= {_need} > MAX_PAST {MAX_PAST}。"
-    f"把 MAX_NEW_TOKENS 降到 {MAX_PAST - 1 - len(prompt_ids)} 以下，"
-    f"或在 build 端加大 MAX_PAST 重編"
+    f" MAX_NEW_TOKENS down to {MAX_PAST - 1 - len(prompt_ids)}"
+    f"or max MAX_PAST and rebuild it"
 )
 
-CCL_OP_NAMES = {0: "allreduce", 1: "allgather", 2: "broadcast",
-                3: "scatter", 4: "gather"}
+# --- for counting
+CCL_OP_NAMES = {0: "allreduce", 1: "allgather", 2: "broadcast", 3: "scatter", 4: "gather"}
 LINK_OP_NAMES = {0: "send", 1: "recv"}
 
 
@@ -190,10 +215,11 @@ def read_triples(handle, worker):
 ccl_records = resolve_counter("runtime.disco.ccl_timer.records")
 link_records = resolve_counter("runtime.disco.ccl_timer.link_records")
 if ccl_records is None or link_records is None:
-    print("  ccl_timer 不在 worker 的 runtime 裡，節點需要重建 tvm_runtime_extra",
+    print("ccl_timer doesn't exist, rebuild tvm_runtime_extra",
           flush=True)
 else:
     sess.get_global_func("runtime.disco.ccl_timer.reset")()
+# --- count done
 
 print("generating ...", flush=True)
 
@@ -239,68 +265,57 @@ while True:
         stop_reason = f"MAX_NEW_TOKENS={MAX_NEW_TOKENS}"
         break
     if past + 1 >= MAX_PAST:
-        stop_reason = f"cache 到上限 MAX_PAST={MAX_PAST}"
+        stop_reason = f"cache reaches the limit: MAX_PAST={MAX_PAST}"
         break
 
 
 print(f"\n\n[stop] {stop_reason}")
 print(tokenizer.decode(generated))
 
-US = 1e3
+
+# --- handle the time counter
+
 MS = 1e6
 
 
-def percentile(sorted_values, ratio):
-    return sorted_values[min(int(len(sorted_values) * ratio), len(sorted_values) - 1)]
+def durations_of(records, op_id):
+    return [nanos for op, _bytes, nanos in records if op == op_id]
 
 
 if ccl_records is not None:
-    print(f"\n[collective] 每次呼叫一筆，"
-          f"{len(generated) - len(prompt_ids)} 個生成 token")
-    worker_totals = []
-    for worker in range(TP):
-        rows = read_triples(ccl_records, worker)
-        worker_totals.append(sum(row[2] for row in rows))
-        print(f"  worker {worker}")
-        print(f"    {'op':>10s} {'次數':>6s} {'bytes':>11s} {'總時間':>10s} "
-              f"{'平均':>9s} {'中位':>9s} {'p99':>9s} {'最慢':>9s}")
-        for op_id, op_name in CCL_OP_NAMES.items():
-            selected = sorted(row[2] for row in rows if row[0] == op_id)
-            if not selected:
-                continue
-            total_bytes = sum(row[1] for row in rows if row[0] == op_id)
-            print(f"    {op_name:>10s} {len(selected):6d} {total_bytes:11d} "
-                  f"{sum(selected) / MS:9.2f}ms {sum(selected) / len(selected) / US:8.1f}us "
-                  f"{percentile(selected, 0.5) / US:8.1f}us "
-                  f"{percentile(selected, 0.99) / US:8.1f}us {selected[-1] / US:8.1f}us")
-    low, high = min(worker_totals), max(worker_totals)
-    print(f"  worker 之間 最少 {low / MS:.2f}ms  最多 {high / MS:.2f}ms")
-    print(f"    min     ≈ 純傳輸（最晚到的 worker 等最少）  {low / MS:9.2f}ms")
-    print(f"    max-min ≈ 負載不均的等待                   {(high - low) / MS:9.2f}ms")
+    records_per_worker = [read_triples(ccl_records, worker) for worker in range(TP)]
+
+    total_calls = 0
+    total_nanos = 0
+    print(f"\n[ccl] {len(generated) - len(prompt_ids)} 個生成 token")
+    for op_id, op_name in CCL_OP_NAMES.items():
+        durations_per_worker = [durations_of(records, op_id) for records in records_per_worker]
+        if not durations_per_worker[0]:
+            continue
+        call_count = min(len(durations) for durations in durations_per_worker)
+        span_nanos = sum(max(durations[i] for durations in durations_per_worker)
+                         for i in range(call_count))
+        total_calls += call_count
+        total_nanos += span_nanos
+        print(f"      {op_name:>10s} {call_count:7d} 次 {span_nanos / MS:10.2f}ms")
+    print(f"      {'合計':>10s} {total_calls:7d} 次 {total_nanos / MS:10.2f}ms")
 
 if link_records is not None:
-    print(f"\n[tcp] 每個 node 的 TCP 邊界。worker 1/3/5/7 是獨立行程，沒有記錄是正常的")
+    send_calls = send_nanos = recv_calls = recv_nanos = 0
     for worker in range(TP):
-        rows = read_triples(link_records, worker)
-        if not rows:
-            continue
-        print(f"  worker {worker}")
-        for op_id, op_name in LINK_OP_NAMES.items():
-            selected = [row for row in rows if row[0] == op_id]
-            if not selected:
-                continue
-            nanos = sum(row[2] for row in selected)
-            nbytes = sum(row[1] for row in selected)
-            line = (f"    {op_name:>4s} {len(selected):6d} 次 {nbytes / 2 ** 20:9.2f}MiB "
-                    f"{nanos / MS:9.2f}ms")
-            if op_id == 0 and nanos > 0:
-                line += f"  有效頻寬 {nbytes / (nanos / 1e9) / 2 ** 20:8.1f} MiB/s"
-            print(line)
-        send_nanos = sum(row[2] for row in rows if row[0] == 0)
-        if ccl_records is not None and low > 0:
-            print(f"    寫 TCP 占 collective {send_nanos / low * 100:.1f}% "
-                  f"-> 高=頻寬受限，低=延遲/不均受限")
-    print("    send = 寫進 socket，接近真實傳送成本")
-    print("    recv = 阻塞在 socket 讀，大部分是等對方，不是傳輸")
+        link_rows = read_triples(link_records, worker)
+        for op, _bytes, nanos in link_rows:
+            if op == 0:
+                send_calls += 1
+                send_nanos += nanos
+            else:
+                recv_calls += 1
+                recv_nanos += nanos
+
+    print(f"\n[tcp] 四個 node 合計")
+    print(f"      {'send':>10s} {send_calls:7d} 次 {send_nanos / MS:10.2f}ms")
+    print(f"      {'recv':>10s} {recv_calls:7d} 次 {recv_nanos / MS:10.2f}ms")
+    print(f"      {'send+recv':>10s} {send_calls + recv_calls:7d} 次 "
+          f"{(send_nanos + recv_nanos) / MS:10.2f}ms")
 
 sess.shutdown()
