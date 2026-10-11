@@ -4,7 +4,7 @@ MIB = 2 ** 20
 MS = 1e6
 
 CCL_OP_NAMES = {0: "allreduce", 1: "allgather", 2: "broadcast", 3: "scatter", 4: "gather"}
-LINK_OP_NAMES = {0: "send", 1: "recv"}
+LINK_SEND = 0
 
 
 def safetensors_key_map(weight_path):
@@ -166,7 +166,7 @@ class RunReport:
             for worker in range(node * self.workers_per_node,
                                 (node + 1) * self.workers_per_node):
                 for op, _bytes, nanos in self._read_triples(self.link_records, worker):
-                    (node_send if op == 0 else node_recv).append(nanos)
+                    (node_send if op == LINK_SEND else node_recv).append(nanos)
             send_per_node.append(sum(node_send[1:]))
             recv_per_node.append(sum(node_recv[1:]))
         return max(send_per_node), max(recv_per_node)
