@@ -114,19 +114,15 @@ class RunReport:
             print(f"      {op_name:>10s} {call_count:7d} 次 {span_nanos / MS:10.2f} ms")
         print(f"      {'合計':>10s} {total_calls:7d} 次 {total_span_nanos / MS:10.2f} ms")
 
-        print(f"\n[3] tcp  最忙的 node")
+        print(f"\n[3] tcp  ")
         print(f"      {'send':>10s} {tcp_send_nanos / MS:10.2f} ms")
         print(f"      {'recv':>10s} {tcp_recv_nanos / MS:10.2f} ms")
 
         print(f"\n[4] 佔 end-to-end")
-        print(f"      {'ccl':>10s} {share(ccl_busiest_worker_nanos)}  最忙 worker 待在 collective 裡")
+        print(f"      {'ccl':>10s} {share(ccl_busiest_worker_nanos)}")
         print(f"      {'tcp send':>10s} {share(tcp_send_nanos)}  proxy 執行緒，含在 ccl 之內")
         print(f"      {'tcp recv':>10s} {share(tcp_recv_nanos)}  proxy 執行緒，含在 ccl 之內")
-        print(f"      {'三者相加':>10s} "
-              f"{share(ccl_busiest_worker_nanos + tcp_send_nanos + tcp_recv_nanos)}  "
-              f"區間重疊，只是上限")
-        print(f"      {'非通訊':>10s} {share(elapsed_nanos - ccl_busiest_worker_nanos)}  "
-              f"計算、logits 搬回 host、host 端 numpy")
+        print(f"      {'非通訊':>10s} {share(elapsed_nanos - ccl_busiest_worker_nanos)}  ")
 
         print(f"\n[5] memory")
         for worker in range(self.tp):
