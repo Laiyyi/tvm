@@ -1,5 +1,4 @@
 import json
-import os
 
 import torch
 from safetensors import safe_open
@@ -31,20 +30,21 @@ def load(weight_path: str, meta_json: str):
     device = tvm.cpu(0)
 
     with safe_open(weight_path, framework="pt") as safetensors:
-        checkpoint_key_of = {
+        safetensors_key_of = {
             "p_" + key.replace(".", "_"): key for key in safetensors.keys()
         }
-        checkpoint_key_of["p_lm_head_weight"] = "model.embed_tokens.weight"
+        safetensors_key_of["p_lm_head_weight"] = "model.embed_tokens.weight"
 
         weights = []
         for name in weight_names:
-            checkpoint_key = checkpoint_key_of[name]
+            safetensors_key = safetensors_key_of[name]
             shard_axis = shard_axis_table.get(name)
+
             if shard_axis is None:
-                part = safetensors.get_tensor(checkpoint_key)
+                part = safetensors.get_tensor(safetensors_key)
             else:
                 shard_axis = int(shard_axis)
-                weight_slice = safetensors.get_slice(checkpoint_key)
+                weight_slice = safetensors.get_slice(safetensors_key)
                 shard_length = weight_slice.get_shape()[shard_axis] // tp
                 part = _read_shard(weight_slice, shard_axis, rank, shard_length)
             weights.append(
@@ -54,13 +54,3 @@ def load(weight_path: str, meta_json: str):
     return weights
 
 
-@register_global_func("runDisco.WeightLoader.report_rank")
-def report_rank():
-    return _worker_rank()
-
-
-@register_global_func("runDisco.WeightLoader.rss")
-def rss():
-    with open("/proc/self/statm") as statm:
-        resident_pages = int(statm.read().split()[1])
-    return resident_pages * os.sysconf("SC_PAGE_SIZE")

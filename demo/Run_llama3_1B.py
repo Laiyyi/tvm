@@ -7,11 +7,11 @@ requirement:
 
 import json
 import os
+import time
 
 import numpy as np
-import torch
-from safetensors import safe_open
 from transformers import AutoTokenizer
+
 
 import tvm
 from tvm.runtime import disco as di
@@ -54,16 +54,6 @@ assert VOCAB_SHARD * TP == VOCAB_SIZE, (VOCAB_SHARD, TP, VOCAB_SIZE)
 # Add "p_" and convert "." from safetensors key into  "_"
 WEIGHT_PATH = f"{WEIGHTS_DIR}/model.safetensors"
 WORKER_WEIGHT_PATH = os.path.abspath(WEIGHT_PATH)
-# safe_open is the safetensors Reader, only read header no tensor
-# pt = torch.Tensor , while np = numpy.ndarry
-with safe_open(WEIGHT_PATH, framework="pt") as safetenosors:
-    relax_key = {
-        "p_" + key.replace(".", "_"): key for key in safetenosors.keys()
-    }
-relax_key["p_lm_head_weight"] = "model.embed_tokens.weight"
-
-unmapped_weights = [n for n in WEIGHT_NAMES if n not in relax_key]
-assert not unmapped_weights, unmapped_weights
 
 
 # session
@@ -82,57 +72,25 @@ sess.init_ccl("cpuccl")
 mod_path = sess.upload_vm_module(os.path.abspath(SO_PATH))
 sess._sync_all()
 vm = sess.load_vm_module(mod_path)
+
+
+
+# workers can load module invidually:runDisco.WeightLoader
 sess.import_python_module("runDisco.WeightLoader")
-print("Load vm module done...")
-
-
-
-replicated_bytes = 0
-sharded_bytes = 0
-hidden_size = None
-with safe_open(WEIGHT_PATH, framework="pt") as safetenosors:
-
-    for index, name in enumerate(WEIGHT_NAMES):
-        weight_slice = safetenosors.get_slice(relax_key[name])
-        full_shape = weight_slice.get_shape()
-        _dtype = weight_slice.get_dtype()
-        shard_axis = SHARD_AXIS.get(name)
-        if name == "p_model_norm_weight":
-            hidden_size = full_shape[0]
-
-        worker_shape = list(full_shape)
-        if shard_axis is None:
-            placement = "replicated"
-        else:
-            shard_axis = int(shard_axis)
-            worker_shape[shard_axis] = full_shape[shard_axis] // TP
-            placement = f"sharded axis{shard_axis}"
-
-        worker_bytes = 4
-        for dim in worker_shape:
-            worker_bytes *= dim
-        if shard_axis is None:
-            replicated_bytes += worker_bytes
-        else:
-            sharded_bytes += worker_bytes
-
-        print(f"  [{index + 1:3d}/{len(WEIGHT_NAMES)}] {name:52s} "
-              f"{_dtype:5s} {str(tuple(full_shape)):18s} "
-              f"{placement:16s} -> {str(tuple(worker_shape)):18s} "
-              f"{worker_bytes / 2 ** 20:8.2f} MiB/worker", flush=True)
-
-
 load_worker_weights = sess.get_global_func("runDisco.WeightLoader.load")
 
+# loading weights
 print("Loading weights on workers...", flush=True)
 weight_array = load_worker_weights(WORKER_WEIGHT_PATH, json.dumps(meta))
 
+
+from runDisco import Report
+# RunReport imports runDisco.Memory on the workers by itself
+run_report = Report.RunReport(sess, NUM_NODES, WORKERS_PER_NODE)
+Report.weight_layout(WEIGHT_PATH, WEIGHT_NAMES, SHARD_AXIS, TP)
+
 tuple_getitem = sess.get_global_func("vm.builtin.tuple_getitem")
 weight_refs = [tuple_getitem(weight_array, index) for index in range(len(WEIGHT_NAMES))]
-print(f"  {len(weight_refs)} weights, "
-      f"{(replicated_bytes + sharded_bytes) / 2 ** 30:.2f} GiB/worker "
-      f"(replicated {replicated_bytes / 2 ** 30:.2f} + sharded {sharded_bytes / 2 ** 30:.2f})",
-      flush=True)
 
 
 # --- Prepare KV cache
@@ -149,7 +107,7 @@ kv_drefs = [
 logits_host = tvm.runtime.tensor(np.empty((1, 1, VOCAB_SIZE), dtype="float32"), device=dev)
 
 
-# ============================================================ 生成
+# Generating
 tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_DIR)
 prompt_ids = tokenizer(PROMPT)["input_ids"]
 generated = list(prompt_ids)
@@ -160,15 +118,18 @@ past = 1
 print(f"prompt: {tokenizer.decode(prompt_ids)!r} -> {len(prompt_ids)} tokens")
 
 
-_need = 1 + len(prompt_ids) + MAX_NEW_TOKENS 
+_need = len(prompt_ids) + MAX_NEW_TOKENS
 assert _need <= MAX_PAST, (
-    f"cache 不夠 dummy 1 + prompt {len(prompt_ids)} + MAX_NEW_TOKENS {MAX_NEW_TOKENS} "
+    f"cache not enough : prompt {len(prompt_ids)} + MAX_NEW_TOKENS {MAX_NEW_TOKENS} "
     f"= {_need} > MAX_PAST {MAX_PAST}。"
-    f"把 MAX_NEW_TOKENS 降到 {MAX_PAST - 1 - len(prompt_ids)} 以下，"
-    f"或在 build 端加大 MAX_PAST 重編"
+    f" MAX_NEW_TOKENS down to {MAX_PAST - len(prompt_ids)}"
+    f"or max MAX_PAST and rebuild it"
 )
 
+run_report.reset()
+
 print("generating ...", flush=True)
+t_generate_begin = time.perf_counter()
 
 stop_reason = "?"
 while True:
@@ -211,12 +172,19 @@ while True:
     if len(generated) - len(prompt_ids) >= MAX_NEW_TOKENS:
         stop_reason = f"MAX_NEW_TOKENS={MAX_NEW_TOKENS}"
         break
-    if past + 1 >= MAX_PAST:
-        stop_reason = f"cache 到上限 MAX_PAST={MAX_PAST}"
+    if past > MAX_PAST:
+        stop_reason = f"cache reaches the limit: MAX_PAST={MAX_PAST}"
         break
 
 
+t_generate_end = time.perf_counter()
+memory_snapshot = run_report.read_memory()
+
 print(f"\n\n[stop] {stop_reason}")
 print(tokenizer.decode(generated))
+
+
+generated_tokens = len(generated) - len(prompt_ids)
+run_report.print_all(t_generate_end - t_generate_begin, memory_snapshot, generated_tokens)
 
 sess.shutdown()
