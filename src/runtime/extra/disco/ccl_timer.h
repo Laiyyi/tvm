@@ -72,7 +72,16 @@ void Record(int64_t op, int64_t bytes, int64_t nanos);
  * boundary are not DiscoWorker threads, so the log has to be shared by the
  * whole process rather than per worker.
  */
-void RecordLink(int64_t op, int64_t bytes, int64_t nanos);
+void RecordLink(int64_t op, int64_t bytes, int64_t read_nanos, int64_t write_nanos,
+                int64_t write_calls);
+
+/*!
+ * \brief Number of power-of-two buckets the proxy transfer sizes fall into.
+ *
+ * Bucket k counts transfers of [2^k, 2^(k+1)) bytes, so 24 buckets reach 16MB,
+ * well past the 64KB proxy buffer that caps any single read.
+ */
+constexpr int kLinkSizeBuckets = 24;
 
 /*!
  * \brief Times the enclosing scope and records it on destruction.

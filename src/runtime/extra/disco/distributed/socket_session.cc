@@ -64,7 +64,12 @@ constexpr size_t kProxyBufSize = 64 * 1024;
 
 // link_op says which side of this thread touches the network: the send thread
 // reads from a local pipe and writes to TCP, the recv thread does the reverse.
-// Only that side is timed, so the record is the transfer and not the local hop.
+// Both sides are recorded, so the stats separate waiting for data from handing
+// it on; which of the two is the network depends on link_op.
+//
+// write_calls is the one number that says whether the network is the
+// bottleneck: WriteSome returning short means the destination would not take
+// the whole buffer, which for the send thread is the socket pushing back.
 void ProxyLoop(DiscoRingChannel* src, DiscoRingChannel* dst, std::string tag, int64_t link_op) {
 
   DLOG(INFO) << "[Proxy " << tag << "] entering, src=" << src << " dst=" << dst;
@@ -79,15 +84,15 @@ void ProxyLoop(DiscoRingChannel* src, DiscoRingChannel* dst, std::string tag, in
 
     ccl_timer::Stopwatch write_watch;
     ssize_t written = 0;
+    int64_t write_calls = 0;
     while (written < n) {
       ssize_t w = dst->WriteSome(buf.data() + written, n - written);
+      ++write_calls;
       if (w <= 0) { DLOG(INFO) << "[Proxy " << tag << "] dst failed (w=" << w << "), exit"; return; }
       written += w;
     }
 
-    ccl_timer::RecordLink(link_op, n,
-                          link_op == ccl_timer::kLinkRecv ? read_nanos
-                                                          : write_watch.ElapsedNanos());
+    ccl_timer::RecordLink(link_op, n, read_nanos, write_watch.ElapsedNanos(), write_calls);
   }
 }
 

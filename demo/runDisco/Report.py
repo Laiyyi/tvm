@@ -4,7 +4,12 @@ MIB = 2 ** 20
 MS = 1e6
 
 CCL_OP_NAMES = {0: "allreduce", 1: "allgather", 2: "broadcast", 3: "scatter", 4: "gather"}
-LINK_SEND = 0
+LINK_DIRECTION_NAMES = {0: "send", 1: "recv"}
+KIB = 2 ** 10
+
+ITERATIONS, BYTES, READ_NANOS, WRITE_NANOS = 0, 1, 2, 3
+WRITE_CALLS, PARTIAL_WRITES, MIN_BYTES, MAX_BYTES = 4, 5, 6, 7
+FIRST_BUCKET = 8
 
 
 def safetensors_key_map(weight_path):
@@ -69,6 +74,11 @@ class RunReport:
         self.link_records = self._resolve("runtime.disco.ccl_timer.link_records")
         if self.ccl_records is None or self.link_records is None:
             print("ccl_timer doesn't exist, rebuild tvm_runtime_extra", flush=True)
+            self.link_stats_width = 0
+        else:
+            self.link_stats_width = int(
+                session.get_global_func("runtime.disco.ccl_timer.link_stats_width")()
+                .debug_get_from_remote(0))
 
         session.import_python_module("runDisco.Memory")
         self.worker_memory = session.get_global_func("runDisco.Memory.usage")
@@ -97,7 +107,9 @@ class RunReport:
     def print_all(self, elapsed_seconds, memory_snapshot, generated_tokens):
         elapsed_nanos = elapsed_seconds * 1e9
         per_op, ccl_busiest_worker_nanos = self._ccl_summary()
-        tcp_send_nanos, tcp_recv_nanos = self._tcp_summary()
+        proxy_per_node = self._proxy_summary()
+        tcp_send_nanos = max((node[0][WRITE_NANOS] for node in proxy_per_node), default=0)
+        tcp_recv_nanos = max((node[1][READ_NANOS] for node in proxy_per_node), default=0)
 
         def share(nanos):
             return f"{nanos / elapsed_nanos * 100:5.1f}%"
@@ -114,9 +126,7 @@ class RunReport:
             print(f"      {op_name:>10s} {call_count:7d} 次 {span_nanos / MS:10.2f} ms")
         print(f"      {'合計':>10s} {total_calls:7d} 次 {total_span_nanos / MS:10.2f} ms")
 
-        print(f"\n[3] tcp  ")
-        print(f"      {'send':>10s} {tcp_send_nanos / MS:10.2f} ms")
-        print(f"      {'recv':>10s} {tcp_recv_nanos / MS:10.2f} ms")
+        self._print_proxy(proxy_per_node)
 
         print(f"\n[4] 佔 end-to-end")
         print(f"      {'ccl':>10s} {share(ccl_busiest_worker_nanos)}")
@@ -154,19 +164,31 @@ class RunReport:
             per_op.append((op_name, call_count, span_nanos))
         return per_op, ccl_busiest_worker_nanos
 
-    def _tcp_summary(self):
+    def _proxy_summary(self):
         if self.link_records is None:
-            return 0, 0
+            return []
 
-        send_per_node = []
-        recv_per_node = []
+        width = self.link_stats_width
+        per_node = []
         for node in range(self.num_nodes):
-            node_send = []
-            node_recv = []
-            for worker in range(node * self.workers_per_node,
-                                (node + 1) * self.workers_per_node):
-                for op, _bytes, nanos in self._read_triples(self.link_records, worker):
-                    (node_send if op == LINK_SEND else node_recv).append(nanos)
-            send_per_node.append(sum(node_send[1:]))
-            recv_per_node.append(sum(node_recv[1:]))
-        return max(send_per_node), max(recv_per_node)
+            flat = list(self.link_records().debug_get_from_remote(node * self.workers_per_node))
+            per_node.append([flat[0:width], flat[width:2 * width]])
+        return per_node
+
+    def _print_proxy(self, proxy_per_node):
+        if not proxy_per_node:
+            return
+        print(f"\n[3] proxy")
+        for node, directions in enumerate(proxy_per_node):
+            for direction, stats in enumerate(directions):
+                name = LINK_DIRECTION_NAMES[direction]
+                iterations = stats[ITERATIONS]
+                if iterations == 0:
+                    print(f"      node {node}  {name}  沒有紀錄")
+                    continue
+                print(f"      node {node}  {name}  "
+                      f"read {stats[READ_NANOS] / MS:9.1f} ms  "
+                      f"write {stats[WRITE_NANOS] / MS:8.1f} ms  "
+                      f"{iterations:7d} 次  {stats[BYTES] / MIB:8.1f} MiB  "
+                      f"{stats[BYTES] / iterations / KIB:6.2f} KiB/次  "
+                      f"partial {stats[PARTIAL_WRITES] / iterations * 100:4.1f}%")
