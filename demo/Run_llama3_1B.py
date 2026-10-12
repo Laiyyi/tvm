@@ -1,12 +1,13 @@
-"""Llama-3.2-1B TP=8 + lm_head vocab parallel only TVM runtime。
+"""Llama-3.2-1B TP? + lm_head vocab parallel only TVM runtime。
 
 requirement:
-    llama3_1B_TP8_vocab.so
-    llama3_1B_TP8_vocab.meta.json
+    llama3_1B_TP?_vocab.so
+    llama3_1B_TP?_vocab.meta.json
 """
 
 import json
 import os
+import sys
 import time
 
 import numpy as np
@@ -16,16 +17,25 @@ from transformers import AutoTokenizer
 import tvm
 from tvm.runtime import disco as di
 
-SO_PATH = "./llama3_1B_TP8.so"
-META_PATH = "./llama3_1B_TP8.meta.json"
+
 TOKENIZER_DIR = "./llama32_1b/tokenizer"
 WEIGHTS_DIR = "./llama32_1b/weights"
 
-
 HOST = ""
 PORT = 18000
-NUM_NODES = 4
-WORKERS_PER_NODE = 2
+
+USAGE = f"usage: python3 {os.path.basename(__file__)} <TP> <NUM_NODES> <WORKERS_PER_NODE>"
+assert len(sys.argv) == 4, USAGE
+TP = int(sys.argv[1])
+NUM_NODES = int(sys.argv[2])
+WORKERS_PER_NODE = int(sys.argv[3])
+
+SO_PATH = f"./llama3_1B_TP{TP}.so"
+META_PATH = f"./llama3_1B_TP{TP}.meta.json"
+for required in (SO_PATH, META_PATH):
+    assert os.path.exists(required), f"{required} not found, build it first"
+
+
 
 PROMPT = "The capital of France is"
 MAX_NEW_TOKENS = 512
@@ -41,11 +51,11 @@ HEAD_DIM = meta["head_dim"]
 MAX_PAST = meta["max_past"]
 VOCAB_SIZE = meta["vocab_size"]    
 VOCAB_SHARD = meta["vocab_shard"]
-TP = meta["tp"]
 MASK_DTYPE = np.dtype(meta["mask_dtype"])
 MASK_IS_BOOL = MASK_DTYPE == np.bool_
 
 # --- check
+assert meta["tp"] == TP, (f"{META_PATH} has tp={meta['tp']}", f"argv tp={TP}")
 assert NUM_NODES * WORKERS_PER_NODE == TP, (NUM_NODES * WORKERS_PER_NODE, TP)
 assert SHARD_AXIS.get("p_lm_head_weight") == 0, "This isn't vocab parallel"
 assert VOCAB_SHARD * TP == VOCAB_SIZE, (VOCAB_SHARD, TP, VOCAB_SIZE)
