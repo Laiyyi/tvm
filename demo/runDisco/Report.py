@@ -1,4 +1,8 @@
+import contextlib
+
 from safetensors import safe_open
+
+from runDisco import Checkpoint
 
 MIB = 2 ** 20
 MS = 1e6
@@ -19,17 +23,23 @@ def safetensors_key_map(weight_path):
     return mapping
 
 
-def weight_layout(weight_path, weight_names, shard_axis_table, tp):
-    safetensors_key_of = safetensors_key_map(weight_path)
-    unmapped = [name for name in weight_names if name not in safetensors_key_of]
+def weight_layout(checkpoint_path, weight_names, shard_axis_table, tp):
+    location_of = Checkpoint.key_map(checkpoint_path)
+    unmapped = [name for name in weight_names if name not in location_of]
     assert not unmapped, unmapped
 
     replicated_bytes = 0
     sharded_bytes = 0
 
-    with safe_open(weight_path, framework="pt") as safetensors:
+    with contextlib.ExitStack() as open_files:
+        reader_of_path = {}
         for index, name in enumerate(weight_names):
-            weight_slice = safetensors.get_slice(safetensors_key_of[name])
+            shard_path, safetensors_key = location_of[name]
+            if shard_path not in reader_of_path:
+                reader_of_path[shard_path] = open_files.enter_context(
+                    safe_open(shard_path, framework="pt"))
+
+            weight_slice = reader_of_path[shard_path].get_slice(safetensors_key)
             full_shape = weight_slice.get_shape()
             checkpoint_dtype = weight_slice.get_dtype()
             shard_axis = shard_axis_table.get(name)
@@ -60,6 +70,23 @@ def weight_layout(weight_path, weight_names, shard_axis_table, tp):
           f"{(replicated_bytes + sharded_bytes) / MIB:.0f} MiB/worker "
           f"(replicated {replicated_bytes / MIB:.0f} + sharded {sharded_bytes / MIB:.0f})",
           flush=True)
+
+
+def local_memory():
+    import psutil
+    info = psutil.Process().memory_full_info()
+    return info.rss, info.uss
+
+
+def single_process_report(elapsed_seconds, generated_tokens, memory_snapshot):
+    rss, uss = memory_snapshot
+    print(f"\n[1] end-to-end  {generated_tokens} 個新 token  {elapsed_seconds:.2f} s  "
+          f"{elapsed_seconds / max(generated_tokens, 1) * 1e3:.1f} ms/token")
+    print(f"      沒有 collective，這個時間全是計算加上 host 端的 numpy")
+
+    print(f"\n[2] memory")
+    print(f"      rss {rss / MIB:9.1f} MiB")
+    print(f"      uss {uss / MIB:9.1f} MiB")
 
 
 class RunReport:
@@ -108,6 +135,7 @@ class RunReport:
         elapsed_nanos = elapsed_seconds * 1e9
         per_op, ccl_busiest_worker_nanos = self._ccl_summary()
         proxy_per_node = self._proxy_summary()
+        has_proxy = any(stats[ITERATIONS] for node in proxy_per_node for stats in node)
         tcp_send_nanos = max((node[0][WRITE_NANOS] for node in proxy_per_node), default=0)
         tcp_recv_nanos = max((node[1][READ_NANOS] for node in proxy_per_node), default=0)
 
@@ -126,12 +154,13 @@ class RunReport:
             print(f"      {op_name:>10s} {call_count:7d} 次 {span_nanos / MS:10.2f} ms")
         print(f"      {'合計':>10s} {total_calls:7d} 次 {total_span_nanos / MS:10.2f} ms")
 
-        self._print_proxy(proxy_per_node)
+        self._print_proxy(proxy_per_node, has_proxy)
 
         print(f"\n[4] 佔 end-to-end")
         print(f"      {'ccl':>10s} {share(ccl_busiest_worker_nanos)}")
-        print(f"      {'tcp send':>10s} {share(tcp_send_nanos)}  proxy 執行緒，含在 ccl 之內")
-        print(f"      {'tcp recv':>10s} {share(tcp_recv_nanos)}  proxy 執行緒，含在 ccl 之內")
+        if has_proxy:
+            print(f"      {'tcp send':>10s} {share(tcp_send_nanos)}  proxy 執行緒，含在 ccl 之內")
+            print(f"      {'tcp recv':>10s} {share(tcp_recv_nanos)}  proxy 執行緒，含在 ccl 之內")
         print(f"      {'非通訊':>10s} {share(elapsed_nanos - ccl_busiest_worker_nanos)}  ")
 
         print(f"\n[5] memory")
@@ -175,10 +204,13 @@ class RunReport:
             per_node.append([flat[0:width], flat[width:2 * width]])
         return per_node
 
-    def _print_proxy(self, proxy_per_node):
+    def _print_proxy(self, proxy_per_node, has_proxy):
         if not proxy_per_node:
             return
         print(f"\n[3] proxy")
+        if not has_proxy:
+            print(f"      單機執行，collective 全走 pipe，沒有 TCP")
+            return
         for node, directions in enumerate(proxy_per_node):
             for direction, stats in enumerate(directions):
                 name = LINK_DIRECTION_NAMES[direction]
