@@ -1,4 +1,7 @@
-""" Llama-3.2-1B TP=8 build with lm_head vocab parallel """
+""" Llama-3.2-1B TP build with lm_head vocab parallel """
+
+import os
+import sys
 
 import torch
 from safetensors.torch import load_file
@@ -13,6 +16,12 @@ from tvm.relax.transform.insert_ccl import InsertAllReduce, InsertLogitsAllGathe
 from tvm.support import cc
 
 
+USAGE = f"usage: python3 {os.path.basename(__file__)} <TP>"
+assert len(sys.argv) == 2, USAGE
+TP = int(sys.argv[1])
+SO_PATH = f"./llama3_1B_TP{TP}.so"
+META_PATH = f"./llama3_1B_TP{TP}.meta.json"
+
 MODEL_DIR = "./llama32_1b/model"
 TOKENIZER_DIR = "./llama32_1b/tokenizer"
 WEIGHTS_DIR = "./llama32_1b/weights"
@@ -26,10 +35,8 @@ weight_param_dict = load_file(f"{WEIGHTS_DIR}/model.safetensors", device="cpu")
 # tie_word_embeddings=True, lm_head.weight 相等
 weight_param_dict["lm_head.weight"] = weight_param_dict["model.embed_tokens.weight"]
 
-
 # --- Tensor-Parallelism --------
 # The following config parameters must be evenly divisible by TP 
-TP = 8
 assert model_config.num_attention_heads % TP == 0, model_config.num_attention_heads
 assert model_config.num_key_value_heads % TP == 0, model_config.num_key_value_heads
 assert model_config.intermediate_size % TP == 0, model_config.intermediate_size
@@ -172,8 +179,6 @@ seq = tvm.transform.Sequential(ccl_passes + [
 mod = seq(mod)
 
 
-SO_PATH = "./llama3_1B_TP8.so"
-META_PATH = "./llama3_1B_TP8.meta.json"
 
 TARGET = tvm.target.Target({
     "kind": "llvm",
