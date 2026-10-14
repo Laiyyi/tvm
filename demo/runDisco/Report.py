@@ -16,13 +16,6 @@ WRITE_CALLS, PARTIAL_WRITES, MIN_BYTES, MAX_BYTES = 4, 5, 6, 7
 FIRST_BUCKET = 8
 
 
-def safetensors_key_map(weight_path):
-    with safe_open(weight_path, framework="pt") as safetensors:
-        mapping = {"p_" + key.replace(".", "_"): key for key in safetensors.keys()}
-    mapping["p_lm_head_weight"] = "model.embed_tokens.weight"
-    return mapping
-
-
 def weight_layout(checkpoint_path, weight_names, shard_axis_table, tp):
     location_of = Checkpoint.key_map(checkpoint_path)
     unmapped = [name for name in weight_names if name not in location_of]
