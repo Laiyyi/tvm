@@ -401,6 +401,8 @@ class DiscoRingChannel {
    * directions make progress independently of payload size, so no worker is
    * ever left unable to drain its peer.
    */
+  static constexpr size_t kSendRecvWriteChunk = 4096;  // PIPE_BUF
+
   void SendRecv(const void* send_data, size_t send_size, DiscoRingChannel& in, void* recv_data,
                 size_t recv_size) {
     const char* wp = static_cast<const char*>(send_data);
@@ -438,7 +440,17 @@ class DiscoRingChannel {
         recv_left -= static_cast<size_t>(n);
       }
       if (send_left > 0 && FD_ISSET(fd_, &wfds)) {
-        ssize_t n = WriteSome(wp, send_left);
+        /*
+         * Clamped to PIPE_BUF because select() promises only that much room,
+         * while a blocking write() of more than that sleeps inside the kernel
+         * until the reader drains it.  The reader is the neighbor, which is
+         * itself inside its own write at that moment, so an unclamped write
+         * deadlocks the whole ring -- it never returns to the recv half of
+         * this loop.  Collectives whose chunk fits in the pipe never hit it,
+         * which is why all-reduce (2KB chunks) was fine and all-gather
+         * (128KB chunks) was not.
+         */
+        ssize_t n = WriteSome(wp, std::min<size_t>(send_left, kSendRecvWriteChunk));
         TVM_FFI_ICHECK_GT(n, 0) << "DiscoRingChannel::SendRecv send failed: "
                                 << std::strerror(errno);
         wp += n;
