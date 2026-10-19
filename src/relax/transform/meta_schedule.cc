@@ -76,7 +76,7 @@ class MetaScheduleTuner {
   tvm::ffi::Function normalize_mod_func_;
 };
 
-Pass MetaScheduleApplyDatabase(ffi::Optional<ffi::String> work_dir, bool enable_warning = false) {
+Pass MetaScheduleApplyDatabase(ffi::Optional<ffi::String> work_dir, ffi::Optional<IRModule> dyn_mod, bool enable_warning = false) {
   using tvm::s_tir::meta_schedule::Database;
   Target target = Target::Current(false);
   const std::optional<tvm::ffi::Function> normalize_mod_func_ =
@@ -97,53 +97,92 @@ Pass MetaScheduleApplyDatabase(ffi::Optional<ffi::String> work_dir, bool enable_
       database =
           s_tir::meta_schedule::Database::JSONDatabase(path_workload, path_tuning_record, true);
     }
-
+    /*
+     * dyn_mod given: `mod` carries the static shapes the database was tuned on,
+     * dyn_mod the symbolic ones we actually compile.  The record is looked up
+     * with the static twin, because QueryTuningRecord hashes the module and
+     * every ModuleEquality compares shapes, so a symbolic function never finds
+     * a statically tuned record.  The trace is then replayed on the symbolic
+     * function, which is what we want scheduled.
+     *
+     * Pairing is by name: the two modules run through the same pass pipeline,
+     * but lowering a symbolic shape can emit functions a static one does not,
+     * so the loop walks dyn_mod to keep the output complete and treats a
+     * missing static twin as "no record".
+     */
+    IRModule query_mod = mod;
+    IRModule target_mod = dyn_mod.value_or(mod);
     ffi::Map<GlobalVar, BaseFunc> result;
     auto mod_eq_structural = s_tir::meta_schedule::ModuleEquality::Create("ignore-tensor");
-    for (const auto& iter : mod->functions) {
+    for (const auto& iter : target_mod->functions) {
       GlobalVar gv = iter.first;
       BaseFunc base_func = iter.second;
       if (const auto* prim_func_node = base_func.as<tirx::PrimFuncNode>()) {
         tirx::PrimFunc prim_func = ffi::GetRef<tirx::PrimFunc>(prim_func_node);
+        IRModule apply_mod = (*normalize_mod_func_)(prim_func).cast<IRModule>();
 
-        IRModule tir_mod = (*normalize_mod_func_)(prim_func).cast<IRModule>();
-        if (ffi::Optional<s_tir::meta_schedule::TuningRecord> opt_record =
-                database->QueryTuningRecord(tir_mod, target, gv->name_hint)) {
-          s_tir::meta_schedule::TuningRecord record = opt_record.value();
-          s_tir::Schedule sch{nullptr};
-          if (!mod_eq_structural->Equal(tir_mod, record->workload->mod)) {
-            // When the database lookup succeeds while structural equality check fails,
-            // it implies that the anchor block based equality has been used during tuning.
-            // The trace in the record cannot directly be applied to this query module.
-            sch = s_tir::Schedule::Traced(
-                tir_mod, /*seed=*/-1, /*debug_mask=*/0,
-                /*error_render_level=*/s_tir::ScheduleErrorRenderLevel::kDetail);
-            s_tir::meta_schedule::ScheduleUsingAnchorTrace(sch, record->trace, target);
-          } else {
-            sch = s_tir::Schedule::Traced(
-                record->workload->mod, /*seed=*/-1, /*debug_mask=*/0,
-                /*error_render_level=*/s_tir::ScheduleErrorRenderLevel::kDetail);
-            record->trace->ApplyToSchedule(sch, /*remove_postproc=*/false);
+        IRModule lookup_mod = apply_mod;
+        if (dyn_mod.defined()) {
+          auto twin = query_mod->global_var_map_.find(gv->name_hint);
+          if (twin == query_mod->global_var_map_.end()) {
+            result.Set(gv, base_func);
+            continue;
           }
-          IRModule new_mod = sch->mod();
-          TVM_FFI_ICHECK_EQ(new_mod->functions.size(), 1);
-          BaseFunc new_base_func = (*new_mod->functions.begin()).second;
-          TVM_FFI_ICHECK(new_base_func->IsInstance<tirx::PrimFuncNode>());
-          tirx::PrimFunc tuned_prim_func = new_base_func.as_or_throw<tirx::PrimFunc>();
-          // maintain the original attributes
-          tirx::PrimFunc new_prim_func = tirx::PrimFunc(/*params=*/tuned_prim_func->params,
-                                                        /*body=*/tuned_prim_func->body,
-                                                        /*ret_type=*/tuned_prim_func->ret_type,
-                                                        /*attrs=*/prim_func->attrs);
-          new_prim_func = WithAttr(std::move(new_prim_func), tirx::attr::kIsScheduled, true);
-          result.Set(gv, new_prim_func);
-          continue;
+          BaseFunc static_func = query_mod->functions[(*twin).second];
+          if (const auto* static_node = static_func.as<tirx::PrimFuncNode>()) {
+            lookup_mod = (*normalize_mod_func_)(ffi::GetRef<tirx::PrimFunc>(static_node))
+                             .cast<IRModule>();
+          }
+        }
+
+        if (ffi::Optional<s_tir::meta_schedule::TuningRecord> opt_record =
+                database->QueryTuningRecord(lookup_mod, target, gv->name_hint)) {
+          s_tir::meta_schedule::TuningRecord record = opt_record.value();
+          s_tir::Schedule sch = s_tir::Schedule::Traced(
+              apply_mod, /*seed=*/-1, /*debug_mask=*/0,
+              /*error_render_level=*/s_tir::ScheduleErrorRenderLevel::kDetail);
+          bool scheduled = true;
+          try {
+            if (!mod_eq_structural->Equal(lookup_mod, record->workload->mod)) {
+              s_tir::meta_schedule::ScheduleUsingAnchorTrace(sch, record->trace, target);
+            } else {
+              record->trace->ApplyToSchedule(sch, /*remove_postproc=*/false);
+            }
+          } catch (const std::exception& error) {
+            /*
+             * A trace sampled against a constant loop extent can be invalid for
+             * a symbolic one -- attention is the usual case, its extents follow
+             * the KV length. Keeping the unscheduled function is correct, just
+             * slower, so one untransferable kernel does not fail the build.
+             */
+            scheduled = false;
+            if (enable_warning) {
+              LOG(WARNING) << "Trace does not transfer to " << gv->name_hint << ": "
+                           << error.what();
+            }
+          }
+
+          if (scheduled) {
+            IRModule new_mod = sch->mod();
+            TVM_FFI_ICHECK_EQ(new_mod->functions.size(), 1);
+            BaseFunc new_base_func = (*new_mod->functions.begin()).second;
+            TVM_FFI_ICHECK(new_base_func->IsInstance<tirx::PrimFuncNode>());
+            tirx::PrimFunc tuned_prim_func = new_base_func.as_or_throw<tirx::PrimFunc>();
+            tirx::PrimFunc new_prim_func = tirx::PrimFunc(/*params=*/tuned_prim_func->params,
+                                                          /*body=*/tuned_prim_func->body,
+                                                          /*ret_type=*/tuned_prim_func->ret_type,
+                                                          /*attrs=*/prim_func->attrs);
+            new_prim_func = WithAttr(std::move(new_prim_func), tirx::attr::kIsScheduled, true);
+            result.Set(gv, new_prim_func);
+            continue;
+          }
         } else if (enable_warning) {
           LOG(WARNING) << "Tuning record is not found for primfunc: " << gv->name_hint;
         }
       }
       result.Set(gv, base_func);
     }
+    mod = target_mod;
     return IRModule(result,       // functions
                     {},           // map
                     mod->attrs);  // attrs);
