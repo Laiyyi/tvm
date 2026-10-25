@@ -187,6 +187,61 @@ void AllReduce(Tensor send, ReduceKind reduce_kind, bool /*in_group*/, Tensor re
   }
 }
 
+struct ReduceScatterState {
+  int steps_left = 0;
+  int64_t chunk_bytes = 0;
+  DLDataType dtype{};
+  ReduceKind reduce_kind = ReduceKind::kSum;
+  std::vector<char> send_buf;
+  size_t send_done = 0;
+  std::vector<char> recv_buf;
+};
+
+static thread_local ReduceScatterState g_rs;
+
+void ReduceScatterBegin(Tensor tile, int reduce_kind, bool /*in_group*/) {
+  DiscoWorker* worker = DiscoWorker::ThreadLocal();
+  if (worker->num_workers == 1) return;
+  TVM_FFI_ICHECK(worker->ring_in != nullptr && worker->ring_out != nullptr)
+      << "Ring not initialized";
+
+  g_rs.steps_left = worker->num_workers - 1;
+  g_rs.chunk_bytes = tile.Shape().Product() * DTypeBytes(tile->dtype);
+  g_rs.dtype = tile->dtype;
+  g_rs.reduce_kind = static_cast<ReduceKind>(reduce_kind);
+  g_rs.recv_buf.resize(static_cast<size_t>(g_rs.chunk_bytes));
+
+  const char* data = static_cast<const char*>(tile->data);
+  g_rs.send_buf.assign(data, data + g_rs.chunk_bytes);
+  g_rs.send_done = worker->ring_out->TrySend(g_rs.send_buf.data(), g_rs.send_buf.size());
+}
+
+void ReduceScatterStep(Tensor tile, bool /*in_group*/, Tensor out) {
+  DiscoWorker* worker = DiscoWorker::ThreadLocal();
+  TVM_FFI_CHECK_GT(g_rs.steps_left, 0, ValueError)
+      << "cpuccl rs_step: no reduce-scatter is open, call rs_begin first";
+
+  worker->ring_out->SendRecv(g_rs.send_buf.data() + g_rs.send_done,
+                             g_rs.send_buf.size() - g_rs.send_done, *worker->ring_in,
+                             g_rs.recv_buf.data(), static_cast<size_t>(g_rs.chunk_bytes));
+
+  int64_t numel = g_rs.chunk_bytes / DTypeBytes(g_rs.dtype);
+  ReduceKind acc_kind =
+      (g_rs.reduce_kind == ReduceKind::kAvg) ? ReduceKind::kSum : g_rs.reduce_kind;
+  if (out->data != tile->data) {
+    std::memcpy(out->data, tile->data, static_cast<size_t>(g_rs.chunk_bytes));
+  }
+  ReduceBytes(out->data, g_rs.recv_buf.data(), numel, g_rs.dtype, acc_kind);
+
+  if (--g_rs.steps_left > 0) {
+    const char* data = static_cast<const char*>(out->data);
+    g_rs.send_buf.assign(data, data + g_rs.chunk_bytes);
+    g_rs.send_done = worker->ring_out->TrySend(g_rs.send_buf.data(), g_rs.send_buf.size());
+  } else if (g_rs.reduce_kind == ReduceKind::kAvg) {
+    DivideInPlaceBytes(out->data, numel, g_rs.dtype, worker->num_workers);
+  }
+}
+
 void AllGather(Tensor send, bool /*in_group*/, Tensor recv) {
   DiscoWorker* worker = DiscoWorker::ThreadLocal();
 
@@ -216,6 +271,45 @@ void AllGather(Tensor send, bool /*in_group*/, Tensor recv) {
     worker->ring_out->SendRecv(buf + si * chunk_bytes, static_cast<size_t>(chunk_bytes),
                                *worker->ring_in, buf + ri * chunk_bytes,
                                static_cast<size_t>(chunk_bytes));
+  }
+}
+
+struct AllGatherState {
+  int steps_left = 0;
+  int64_t chunk_bytes = 0;
+  std::vector<char> send_buf;
+  size_t send_done = 0;
+};
+
+static thread_local AllGatherState g_ag;
+
+void AllGatherBegin(Tensor shard, bool /*in_group*/) {
+  DiscoWorker* worker = DiscoWorker::ThreadLocal();
+  if (worker->num_workers == 1) return;
+  TVM_FFI_ICHECK(worker->ring_in != nullptr && worker->ring_out != nullptr)
+      << "Ring not initialized";
+
+  g_ag.steps_left = worker->num_workers - 1;
+  g_ag.chunk_bytes = shard.Shape().Product() * DTypeBytes(shard->dtype);
+
+  const char* data = static_cast<const char*>(shard->data);
+  g_ag.send_buf.assign(data, data + g_ag.chunk_bytes);
+  g_ag.send_done = worker->ring_out->TrySend(g_ag.send_buf.data(), g_ag.send_buf.size());
+}
+
+void AllGatherStep(bool /*in_group*/, Tensor out) {
+  DiscoWorker* worker = DiscoWorker::ThreadLocal();
+  TVM_FFI_CHECK_GT(g_ag.steps_left, 0, ValueError)
+      << "cpuccl ag_step: no all-gather is open, call ag_begin first";
+
+  worker->ring_out->SendRecv(g_ag.send_buf.data() + g_ag.send_done,
+                             g_ag.send_buf.size() - g_ag.send_done, *worker->ring_in, out->data,
+                             static_cast<size_t>(g_ag.chunk_bytes));
+
+  if (--g_ag.steps_left > 0) {
+    const char* data = static_cast<const char*>(out->data);
+    g_ag.send_buf.assign(data, data + g_ag.chunk_bytes);
+    g_ag.send_done = worker->ring_out->TrySend(g_ag.send_buf.data(), g_ag.send_buf.size());
   }
 }
 
@@ -349,6 +443,10 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       .def("runtime.disco." TVM_DISCO_CCL_NAME ".broadcast_from_worker0", BroadcastFromWorker0)
       .def("runtime.disco." TVM_DISCO_CCL_NAME ".scatter_from_worker0", ScatterFromWorker0)
       .def("runtime.disco." TVM_DISCO_CCL_NAME ".gather_to_worker0", GatherToWorker0)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".rs_begin", ReduceScatterBegin)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".rs_step", ReduceScatterStep)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".ag_begin", AllGatherBegin)
+      .def("runtime.disco." TVM_DISCO_CCL_NAME ".ag_step", AllGatherStep)
       .def("runtime.disco." TVM_DISCO_CCL_NAME ".sync_worker", SyncWorker);
 }
 

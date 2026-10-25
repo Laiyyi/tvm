@@ -388,19 +388,6 @@ class DiscoRingChannel {
     return n;
   }
 
-
-  /*!
-   * \brief Send on this channel while concurrently receiving on `in`.
-   *
-   * A ring collective typically has every worker call Send() before Recv() in
-   * the same step. If a payload is larger than the pipe/socket buffer, a
-   * naive blocking Send() stalls waiting for the downstream neighbor to
-   * drain it, but that neighbor is itself stalled in its own Send() and never
-   * reaches Recv() to do the draining -- a circular wait across the whole
-   * ring. Interleaving partial reads/writes via select() lets both
-   * directions make progress independently of payload size, so no worker is
-   * ever left unable to drain its peer.
-   */
   static constexpr size_t kSendRecvWriteChunk = 4096;  // PIPE_BUF
 
   void SendRecv(const void* send_data, size_t send_size, DiscoRingChannel& in, void* recv_data,
@@ -440,16 +427,6 @@ class DiscoRingChannel {
         recv_left -= static_cast<size_t>(n);
       }
       if (send_left > 0 && FD_ISSET(fd_, &wfds)) {
-        /*
-         * Clamped to PIPE_BUF because select() promises only that much room,
-         * while a blocking write() of more than that sleeps inside the kernel
-         * until the reader drains it.  The reader is the neighbor, which is
-         * itself inside its own write at that moment, so an unclamped write
-         * deadlocks the whole ring -- it never returns to the recv half of
-         * this loop.  Collectives whose chunk fits in the pipe never hit it,
-         * which is why all-reduce (2KB chunks) was fine and all-gather
-         * (128KB chunks) was not.
-         */
         ssize_t n = WriteSome(wp, std::min<size_t>(send_left, kSendRecvWriteChunk));
         TVM_FFI_ICHECK_GT(n, 0) << "DiscoRingChannel::SendRecv send failed: "
                                 << std::strerror(errno);
@@ -457,6 +434,29 @@ class DiscoRingChannel {
         send_left -= static_cast<size_t>(n);
       }
     }
+  }
+
+  size_t TrySend(const void* data, size_t size) {
+    const char* wp = static_cast<const char*>(data);
+    size_t sent = 0;
+    while (sent < size) {
+      fd_set wfds;
+      FD_ZERO(&wfds);
+      FD_SET(fd_, &wfds);
+      timeval no_wait{0, 0};
+      int ret;
+      do {
+        ret = ::select(fd_ + 1, nullptr, &wfds, nullptr, &no_wait);
+      } while (ret < 0 && errno == EINTR);
+      TVM_FFI_ICHECK_GE(ret, 0) << "DiscoRingChannel::TrySend select failed: "
+                                << std::strerror(errno);
+      if (ret == 0) break;
+      ssize_t n = WriteSome(wp + sent, std::min<size_t>(size - sent, kSendRecvWriteChunk));
+      TVM_FFI_ICHECK_GT(n, 0) << "DiscoRingChannel::TrySend send failed: "
+                              << std::strerror(errno);
+      sent += static_cast<size_t>(n);
+    }
+    return sent;
   }
 
   void Close() {

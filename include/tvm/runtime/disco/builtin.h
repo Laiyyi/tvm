@@ -87,6 +87,10 @@ TVM_RUNTIME_DLL void AllReduce(Tensor send, ReduceKind reduce_kind, bool in_grou
  * \param recv The array receives the outcome of allgather
  */
 TVM_RUNTIME_DLL void AllGather(Tensor send, bool in_group, Tensor recv);
+TVM_RUNTIME_DLL void ReduceScatterBegin(Tensor tile, ReduceKind reduce_kind, bool in_group);
+TVM_RUNTIME_DLL void ReduceScatterStep(Tensor tile, bool in_group, Tensor out);
+TVM_RUNTIME_DLL void AllGatherBegin(Tensor shard, bool in_group);
+TVM_RUNTIME_DLL void AllGatherStep(bool in_group, Tensor out);
 /*!
  * \brief Perform a broadcast operation from worker-0
  * \param send The buffer to be broadcasted

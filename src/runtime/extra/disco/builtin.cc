@@ -112,6 +112,18 @@ void AllGather(Tensor send, bool in_group, Tensor recv) {
   GetCCLFunc("allgather")(send, in_group, recv);
 }
 
+void ReduceScatterBegin(Tensor tile, ReduceKind reduce_kind, bool in_group) {
+  GetCCLFunc("rs_begin")(tile, static_cast<int>(reduce_kind), in_group);
+}
+
+void ReduceScatterStep(Tensor tile, bool in_group, Tensor out) {
+  GetCCLFunc("rs_step")(tile, in_group, out);
+}
+
+void AllGatherBegin(Tensor shard, bool in_group) { GetCCLFunc("ag_begin")(shard, in_group); }
+
+void AllGatherStep(bool in_group, Tensor out) { GetCCLFunc("ag_step")(in_group, out); }
+
 TVM_RUNTIME_DLL void BroadcastFromWorker0(Tensor send, bool in_group, Tensor recv) {
   GetCCLFunc("broadcast_from_worker0")(send, in_group, recv);
 }
@@ -172,6 +184,15 @@ TVM_FFI_STATIC_INIT_BLOCK() {
              AllReduce(send, static_cast<ReduceKind>(kind), in_group, recv);
            })
       .def("runtime.disco.allgather", AllGather)
+      .def("runtime.disco.rs_begin",
+           [](Tensor tile, ffi::Shape reduce_kind, bool in_group) {
+             int kind = IntegerFromShape(reduce_kind);
+             TVM_FFI_CHECK(0 <= kind && kind <= 4, ValueError) << "Unknown ReduceKind: " << kind;
+             ReduceScatterBegin(tile, static_cast<ReduceKind>(kind), in_group);
+           })
+      .def("runtime.disco.rs_step", ReduceScatterStep)
+      .def("runtime.disco.ag_begin", AllGatherBegin)
+      .def("runtime.disco.ag_step", AllGatherStep)
       .def("runtime.disco.broadcast_from_worker0", BroadcastFromWorker0)
       .def("runtime.disco.scatter_from_worker0", ScatterFromWorker0)
       .def("runtime.disco.gather_to_worker0", GatherToWorker0)
