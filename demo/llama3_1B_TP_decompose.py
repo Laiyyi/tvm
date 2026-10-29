@@ -178,7 +178,7 @@ seq = tvm.transform.Sequential(ccl_passes + [
     relax.transform.FuseOps(),
     relax.transform.FuseTIR(),
     relax.transform.DeadCodeElimination(),
-    DecomposeAllReduce(TP),
+    DecomposeAllReduce(TP, rms_norm_eps=model_config.rms_norm_eps),
 ])
 mod = seq(mod)
 
