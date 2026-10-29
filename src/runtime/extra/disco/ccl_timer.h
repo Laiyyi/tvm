@@ -48,6 +48,8 @@ enum OpId : int64_t {
   kBroadcastFromWorker0 = 2,
   kScatterFromWorker0 = 3,
   kGatherToWorker0 = 4,
+  kReduceScatterStep = 5,
+  kAllGatherStep = 6,
 };
 
 /*!

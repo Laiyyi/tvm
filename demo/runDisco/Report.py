@@ -7,7 +7,8 @@ from runDisco import Checkpoint
 MIB = 2 ** 20
 MS = 1e6
 
-CCL_OP_NAMES = {0: "allreduce", 1: "allgather", 2: "broadcast", 3: "scatter", 4: "gather"}
+CCL_OP_NAMES = {0: "allreduce", 1: "allgather", 2: "broadcast", 3: "scatter", 4: "gather",
+                5: "rs_step", 6: "ag_step"}
 LINK_DIRECTION_NAMES = {0: "send", 1: "recv"}
 KIB = 2 ** 10
 

@@ -207,6 +207,7 @@ void ReduceScatterBegin(Tensor tile, int reduce_kind, bool /*in_group*/) {
 
   g_rs.steps_left = worker->num_workers - 1;
   g_rs.chunk_bytes = tile.Shape().Product() * DTypeBytes(tile->dtype);
+  ccl_timer::ScopedTimer timer(ccl_timer::kReduceScatterStep, g_rs.chunk_bytes);
   g_rs.dtype = tile->dtype;
   g_rs.reduce_kind = static_cast<ReduceKind>(reduce_kind);
   g_rs.recv_buf.resize(static_cast<size_t>(g_rs.chunk_bytes));
@@ -220,6 +221,7 @@ void ReduceScatterStep(Tensor tile, bool /*in_group*/, Tensor out) {
   DiscoWorker* worker = DiscoWorker::ThreadLocal();
   TVM_FFI_CHECK_GT(g_rs.steps_left, 0, ValueError)
       << "cpuccl rs_step: no reduce-scatter is open, call rs_begin first";
+  ccl_timer::ScopedTimer timer(ccl_timer::kReduceScatterStep, g_rs.chunk_bytes);
 
   worker->ring_out->SendRecv(g_rs.send_buf.data() + g_rs.send_done,
                              g_rs.send_buf.size() - g_rs.send_done, *worker->ring_in,
@@ -291,6 +293,7 @@ void AllGatherBegin(Tensor shard, bool /*in_group*/) {
 
   g_ag.steps_left = worker->num_workers - 1;
   g_ag.chunk_bytes = shard.Shape().Product() * DTypeBytes(shard->dtype);
+  ccl_timer::ScopedTimer timer(ccl_timer::kAllGatherStep, g_ag.chunk_bytes);
 
   const char* data = static_cast<const char*>(shard->data);
   g_ag.send_buf.assign(data, data + g_ag.chunk_bytes);
@@ -301,6 +304,7 @@ void AllGatherStep(bool /*in_group*/, Tensor out) {
   DiscoWorker* worker = DiscoWorker::ThreadLocal();
   TVM_FFI_CHECK_GT(g_ag.steps_left, 0, ValueError)
       << "cpuccl ag_step: no all-gather is open, call ag_begin first";
+  ccl_timer::ScopedTimer timer(ccl_timer::kAllGatherStep, g_ag.chunk_bytes);
 
   worker->ring_out->SendRecv(g_ag.send_buf.data() + g_ag.send_done,
                              g_ag.send_buf.size() - g_ag.send_done, *worker->ring_in, out->data,
