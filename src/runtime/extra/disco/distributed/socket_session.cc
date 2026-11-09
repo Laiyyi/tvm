@@ -25,6 +25,7 @@
 
 #include "../../../../support/socket.h"
 #include "../bcast_session.h"
+#include "../ccl_timer.h"
 #include "../message_queue.h"
 
 namespace tvm {
@@ -61,22 +62,37 @@ class DiscoSocketChannel : public DiscoChannel {
 // recv: TCP → pipe
 constexpr size_t kProxyBufSize = 64 * 1024;
 
-void ProxyLoop(DiscoRingChannel* src, DiscoRingChannel* dst, std::string tag) {
+// link_op says which side of this thread touches the network: the send thread
+// reads from a local pipe and writes to TCP, the recv thread does the reverse.
+// Both sides are recorded, so the stats separate waiting for data from handing
+// it on; which of the two is the network depends on link_op.
+//
+// write_calls is the one number that says whether the network is the
+// bottleneck: WriteSome returning short means the destination would not take
+// the whole buffer, which for the send thread is the socket pushing back.
+void ProxyLoop(DiscoRingChannel* src, DiscoRingChannel* dst, std::string tag, int64_t link_op) {
 
   DLOG(INFO) << "[Proxy " << tag << "] entering, src=" << src << " dst=" << dst;
   std::vector<char> buf(kProxyBufSize);
 
   while (true) {
+    ccl_timer::Stopwatch read_watch;
     ssize_t n = src->ReadSome(buf.data(), buf.size());
+    int64_t read_nanos = read_watch.ElapsedNanos();
     if (n <= 0) { LOG(INFO) << "[Proxy " << tag << "] src closed (n=" << n << "), exit"; return; }
     DLOG(INFO) << "[Proxy " << tag << "] transfer " << n << " bytes";
 
+    ccl_timer::Stopwatch write_watch;
     ssize_t written = 0;
+    int64_t write_calls = 0;
     while (written < n) {
       ssize_t w = dst->WriteSome(buf.data() + written, n - written);
+      ++write_calls;
       if (w <= 0) { DLOG(INFO) << "[Proxy " << tag << "] dst failed (w=" << w << "), exit"; return; }
       written += w;
     }
+
+    ccl_timer::RecordLink(link_op, n, read_nanos, write_watch.ElapsedNanos(), write_calls);
   }
 }
 
@@ -133,8 +149,10 @@ class RingProxyEndpoint {
     TVM_FFI_ICHECK(proxy_out_to_tcp_ != nullptr);
     proxy_in_from_tcp_ = std::make_unique<DiscoRingChannel>(sess_fds[1]);
 
-    send_thread_ = std::thread(ProxyLoop, proxy_out_to_tcp_.get(), tcp_out_ch_.get(), tag + "-send");
-    recv_thread_ = std::thread(ProxyLoop, tcp_in_ch_.get(), proxy_in_from_tcp_.get(), tag + "-recv");
+    send_thread_ = std::thread(ProxyLoop, proxy_out_to_tcp_.get(), tcp_out_ch_.get(), tag + "-send",
+                               ccl_timer::kLinkSend);
+    recv_thread_ = std::thread(ProxyLoop, tcp_in_ch_.get(), proxy_in_from_tcp_.get(), tag + "-recv",
+                               ccl_timer::kLinkRecv);
     LOG(INFO) << "[Ring " << tag << "] send/recv proxy threads started";
   }
 
