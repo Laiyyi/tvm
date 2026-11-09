@@ -211,6 +211,17 @@ class ThreadedSessionObj final : public BcastSessionObj {
       ring_channels_.push_back(std::move(channel_in));
       ring_channels_.push_back(std::move(channel_out));
     }
+
+    for (int i = 1; i < num_workers; ++i) {
+      int fds[2];
+      TVM_FFI_ICHECK_EQ(::pipe(fds), 0) << "Failed to create node pipe for worker " << i;
+      auto channel_up = std::make_unique<DiscoRingChannel>(fds[1]);
+      auto channel_child = std::make_unique<DiscoRingChannel>(fds[0]);
+      workers_[i].worker->node_up = channel_up.get();
+      workers_[0].worker->node_children.push_back(channel_child.get());
+      ring_channels_.push_back(std::move(channel_up));
+      ring_channels_.push_back(std::move(channel_child));
+    }
   }
 };
 

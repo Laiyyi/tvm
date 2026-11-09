@@ -159,6 +159,61 @@ class RingProxyEndpoint {
   std::thread recv_thread_;
 };
 
+class StarEndpoint {
+ public:
+  void Connect(int node_id, int num_nodes, int star_port,
+               const std::vector<ffi::String>& node_hosts, const BcastSession& local_session) {
+    if (node_id == 0) {
+      TCPSocket listen_sock;
+      listen_sock.Create();
+      listen_sock.SetKeepAlive(true);
+      listen_sock.Bind(SockAddr(node_hosts[0].c_str(), star_port));
+      listen_sock.Listen();
+      std::vector<std::unique_ptr<DiscoRingChannel>> by_node(num_nodes);
+      for (int i = 1; i < num_nodes; ++i) {
+        SockAddr addr;
+        auto channel = std::make_unique<DiscoRingChannel>(listen_sock.Accept(&addr).Release());
+        int32_t peer = -1;
+        channel->Recv(&peer, sizeof(peer));
+        TVM_FFI_ICHECK(peer > 0 && peer < num_nodes && by_node[peer] == nullptr)
+            << "[Star] unexpected peer node id " << peer;
+        by_node[peer] = std::move(channel);
+      }
+      listen_sock.Close();
+      for (int i = 1; i < num_nodes; ++i) peers_.push_back(std::move(by_node[i]));
+    } else {
+      TCPSocket sock;
+      sock.Create();
+      sock.SetKeepAlive(true);
+      bool ok = false;
+      for (int i = 0; i < 100; ++i) {
+        if (sock.Connect(SockAddr(node_hosts[0].c_str(), star_port))) {
+          ok = true;
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      TVM_FFI_ICHECK(ok) << "[Star] node " << node_id << " failed to connect to root "
+                         << node_hosts[0].c_str() << ":" << star_port;
+      peers_.push_back(std::make_unique<DiscoRingChannel>(sock.Release()));
+      int32_t self = node_id;
+      peers_.back()->Send(&self, sizeof(self));
+    }
+    std::vector<DiscoRingChannel*> raw;
+    for (auto& peer : peers_) raw.push_back(peer.get());
+    local_session->SetStarPeers(std::move(raw));
+    LOG(INFO) << "[Star] node_id=" << node_id << " connected with " << peers_.size() << " peer(s)";
+  }
+
+  void Close() {
+    for (auto& peer : peers_) peer->Close();
+    peers_.clear();
+  }
+
+ private:
+  std::vector<std::unique_ptr<DiscoRingChannel>> peers_;
+};
+
 class SocketSessionObj : public BcastSessionObj {
  public:
   explicit SocketSessionObj(int num_nodes, int num_workers_per_node, int num_groups,
@@ -229,6 +284,8 @@ class SocketSessionObj : public BcastSessionObj {
           LOG(INFO) << "[Host] IP and port broadcast completed.";
         }
         ring_.Connect(/*node_id=*/0, num_nodes_, base_ring_port, node_hosts_, local_session_,"controller");
+        star_.Connect(/*node_id=*/0, num_nodes_, base_ring_port + num_nodes_, node_hosts_,
+                      local_session_);
 
         const int num_workers = num_nodes_ * num_workers_per_node_;
         for (int worker_id = 1; worker_id < num_workers; ++worker_id) { this->SyncWorker(worker_id); }
@@ -337,6 +394,7 @@ class SocketSessionObj : public BcastSessionObj {
       local_session_->CloseRing();
       ring_.Close();
       ring_.Join();
+      star_.Close();
     }
 
     for (auto& socket : remote_sockets_) {
@@ -365,6 +423,7 @@ class SocketSessionObj : public BcastSessionObj {
 
   private:
    RingProxyEndpoint ring_;
+   StarEndpoint star_;
 };
 
 class RemoteSocketSession {
@@ -463,6 +522,7 @@ class RemoteSocketSession {
         local_session_->CloseRing();
         ring_.Close();
         ring_.Join();
+        star_.Close();
       }
     }
     if (!socket_.IsClosed()) socket_.Close();
@@ -491,6 +551,7 @@ class RemoteSocketSession {
 
       ring_.Connect(node_id_, nNodes, base_ring_port, node_hosts, local_session_,
                     "node_" + std::to_string(node_id_));
+      star_.Connect(node_id_, nNodes, base_ring_port + nNodes, node_hosts, local_session_);
     }//build ring
   }
 
@@ -504,6 +565,7 @@ class RemoteSocketSession {
 
   bool build_ring = false;
   RingProxyEndpoint ring_;
+  StarEndpoint star_;
 };
 
 void RemoteSocketSessionEntryPoint(const ffi::String& server_host, int server_port,
@@ -543,6 +605,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
              worker->num_groups = num_groups;
              worker->worker_id = worker->worker_id + node_id * num_workers_per_node;
              worker->num_workers = num_nodes * num_workers_per_node;
+             worker->num_workers_per_node = num_workers_per_node;
              LOG(INFO) << "[Disco_worker_" << worker->worker_id << "]" << " Initializing worker group with " << num_nodes << " nodes, "
                        << num_workers_per_node << " workers per node, and " << num_groups
                        << " groups.";

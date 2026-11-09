@@ -58,6 +58,7 @@ class DiscoPopenWorker:
         stderr=None,
         ring_in_fd: int = -1,
         ring_out_fd: int = -1,
+        up_fd: int = -1,
     ):
         self.worker_id = worker_id
         self.num_workers = num_workers
@@ -68,6 +69,7 @@ class DiscoPopenWorker:
         self._stderr = stderr
         self.ring_out_fd = ring_out_fd
         self.ring_in_fd = ring_in_fd
+        self.up_fd = up_fd
 
     def __del__(self):
         try:
@@ -140,7 +142,7 @@ class DiscoPopenWorker:
             os.set_handle_inheritable(worker_write_handle, True)
             cmd += [str(worker_read_handle), str(worker_write_handle)]
             # CPU ring is not implemented on Windows.
-            cmd += ["-1", "-1"]
+            cmd += ["-1", "-1", "-1"]
             self._proc = subprocess.Popen(
                 cmd,
                 close_fds=False,
@@ -156,6 +158,9 @@ class DiscoPopenWorker:
                 pass_fds += [self.ring_in_fd, self.ring_out_fd]
             else:
                 cmd += ["-1", "-1"]
+            cmd += [str(self.up_fd)]
+            if self.up_fd >= 0:
+                pass_fds += [self.up_fd]
 
             self._proc = subprocess.Popen(  # pylint: disable=consider-using-with
                 cmd,
@@ -170,6 +175,8 @@ class DiscoPopenWorker:
         if has_ring:
             os.close(self.ring_out_fd)
             os.close(self.ring_in_fd)
+        if self.up_fd >= 0:
+            os.close(self.up_fd)
         return main_read, main_write
 
 
@@ -200,9 +207,12 @@ def _kill_child_processes(pid):
 def _create_process_pool(num_workers: int, num_groups: int, entrypoint: str, build_ring: bool):
     """Create a process pool where the workers' are [1, num_workers)."""
     ring_pipes = []
+    up_pipes = []
     if build_ring:
         for _ in range(num_workers):
             ring_pipes.append(os.pipe())
+        for _ in range(1, num_workers):
+            up_pipes.append(os.pipe())
 
     pool = []
     for i in range(1, num_workers):
@@ -220,11 +230,12 @@ def _create_process_pool(num_workers: int, num_groups: int, entrypoint: str, bui
                 entrypoint,
                 ring_in_fd=ring_in_fd,
                 ring_out_fd=ring_out_fd,
+                up_fd=up_pipes[i - 1][1] if build_ring else -1,
             )
         )
 
     def result_func(worker_id: int):
-        nonlocal pool, ring_pipes
+        nonlocal pool, ring_pipes, up_pipes
 
         # Special ID (-1): Return the ring FDs of worker 0  for the controller.
         if worker_id == -1:
@@ -235,6 +246,9 @@ def _create_process_pool(num_workers: int, num_groups: int, entrypoint: str, bui
                     ring_pipes[0][1],  # W0 ring_out (write of pipe[0])
                 ]
             )
+        if worker_id == -2:
+            assert build_ring, "Ring not enabled; cannot query node up fds"
+            return Shape([read_fd for read_fd, _ in up_pipes])
         if worker_id != 0:
             read_fd, write_fd = pool[worker_id - 1].start()
             return Shape([read_fd, write_fd])

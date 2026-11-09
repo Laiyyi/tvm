@@ -60,7 +60,9 @@ class DiscoWorker {
         channel(channel),
         register_file{},
         ring_in(nullptr),
-        ring_out(nullptr) {}
+        ring_out(nullptr),
+        num_workers_per_node(num_workers),
+        node_up(nullptr) {}
 
   /*! \brief Main loop of the worker */
   void MainLoop();
@@ -101,6 +103,10 @@ class DiscoWorker {
   /*! \brief CPU communication ring endpoints assigned by the session during BuildRing(). */
   DiscoRingChannel* ring_in;
   DiscoRingChannel* ring_out;
+  int num_workers_per_node;
+  DiscoRingChannel* node_up;
+  std::vector<DiscoRingChannel*> node_children;
+  std::vector<DiscoRingChannel*> star_peers;
 };
 /*!
  * \brief A threadlocal wrapper of DiscoWorker.

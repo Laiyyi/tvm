@@ -115,8 +115,91 @@ void InitCCLPerWorker(ffi::Shape device_ids) {
 
 void SyncWorker() {}
 
+static void MultiRecv(const std::vector<DiscoRingChannel*>& channels,
+                      std::vector<std::vector<char>>* bufs, size_t size) {
+  bufs->assign(channels.size(), std::vector<char>(size));
+  std::vector<size_t> got(channels.size(), 0);
+  size_t done = 0;
+  for (size_t i = 0; i < channels.size(); ++i) {
+    if (size == 0) ++done;
+  }
+  while (done < channels.size()) {
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    int maxfd = -1;
+    for (size_t i = 0; i < channels.size(); ++i) {
+      if (got[i] < size) {
+        FD_SET(channels[i]->fd(), &rfds);
+        maxfd = std::max(maxfd, channels[i]->fd());
+      }
+    }
+    int ret;
+    do {
+      ret = ::select(maxfd + 1, &rfds, nullptr, nullptr, nullptr);
+    } while (ret < 0 && errno == EINTR);
+    TVM_FFI_ICHECK_GE(ret, 0) << "cpuccl MultiRecv select failed: " << std::strerror(errno);
+    for (size_t i = 0; i < channels.size(); ++i) {
+      if (got[i] < size && FD_ISSET(channels[i]->fd(), &rfds)) {
+        ssize_t n = channels[i]->ReadSome((*bufs)[i].data() + got[i], size - got[i]);
+        TVM_FFI_ICHECK_GT(n, 0) << "cpuccl MultiRecv recv failed: " << std::strerror(errno);
+        got[i] += static_cast<size_t>(n);
+        if (got[i] == size) ++done;
+      }
+    }
+  }
+}
+
+static bool UseStar(DiscoWorker* worker) {
+  if (worker->local_worker_id != 0) return worker->node_up != nullptr;
+  return static_cast<int>(worker->node_children.size()) == worker->num_workers_per_node - 1 &&
+         (worker->num_workers == worker->num_workers_per_node || !worker->star_peers.empty());
+}
+
+static void StarAllReduce(DiscoWorker* worker, Tensor send, ReduceKind reduce_kind, Tensor recv) {
+  DLDataType dtype = send->dtype;
+  int64_t numel = send.Shape().Product();
+  size_t bytes = static_cast<size_t>(numel * DTypeBytes(dtype));
+  int local = worker->local_worker_id;
+  int per_node = worker->num_workers_per_node;
+  int num_nodes = worker->num_workers / per_node;
+  ReduceKind acc_kind = (reduce_kind == ReduceKind::kAvg) ? ReduceKind::kSum : reduce_kind;
+
+  if (local != 0) {
+    worker->node_up->Send(send->data, bytes);
+    worker->ring_in->Recv(recv->data, bytes);
+    if (local + 1 < per_node) worker->ring_out->Send(recv->data, bytes);
+    return;
+  }
+
+  std::memcpy(recv->data, send->data, bytes);
+  std::vector<std::vector<char>> parts;
+  MultiRecv(worker->node_children, &parts, bytes);
+  for (auto& part : parts) ReduceBytes(recv->data, part.data(), numel, dtype, acc_kind);
+
+  if (num_nodes > 1 && worker->worker_id == 0) {
+    MultiRecv(worker->star_peers, &parts, bytes);
+    for (auto& part : parts) ReduceBytes(recv->data, part.data(), numel, dtype, acc_kind);
+    if (reduce_kind == ReduceKind::kAvg) {
+      DivideInPlaceBytes(recv->data, numel, dtype, worker->num_workers);
+    }
+    for (DiscoRingChannel* peer : worker->star_peers) peer->Send(recv->data, bytes);
+  } else if (num_nodes > 1) {
+    worker->star_peers[0]->Send(recv->data, bytes);
+    worker->star_peers[0]->Recv(recv->data, bytes);
+  } else if (reduce_kind == ReduceKind::kAvg) {
+    DivideInPlaceBytes(recv->data, numel, dtype, worker->num_workers);
+  }
+
+  if (per_node > 1) worker->ring_out->Send(recv->data, bytes);
+}
+
 void AllReduce(Tensor send, ReduceKind reduce_kind, bool /*in_group*/, Tensor recv) {
   DiscoWorker* worker = DiscoWorker::ThreadLocal();
+
+  if (worker->num_workers > 1 && UseStar(worker)) {
+    StarAllReduce(worker, send, reduce_kind, recv);
+    return;
+  }
 
   if (worker->num_workers > 1) {
     TVM_FFI_ICHECK(worker->ring_in != nullptr && worker->ring_out != nullptr)

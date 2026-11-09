@@ -93,6 +93,12 @@ class ProcessSessionObj final : public BcastSessionObj {
       ring_out_w0_ = std::make_unique<DiscoRingChannel>(w0_ring_out_fd);
       worker_0_->worker->ring_in = ring_in_w0_.get();
       worker_0_->worker->ring_out = ring_out_w0_.get();
+
+      ffi::Shape up_fds = process_pool_(-2).cast<ffi::Shape>();
+      for (int64_t fd : up_fds) {
+        node_children_.push_back(std::make_unique<DiscoRingChannel>(fd));
+        worker_0_->worker->node_children.push_back(node_children_.back().get());
+      }
     }
   }
 
@@ -194,11 +200,16 @@ class ProcessSessionObj final : public BcastSessionObj {
     ring_in_w0_.reset();
   }
 
+  void SetStarPeers(std::vector<DiscoRingChannel*> peers) override {
+    worker_0_->worker->star_peers = std::move(peers);
+  }
+
   ffi::Function process_pool_;
   std::unique_ptr<DiscoWorkerThread> worker_0_;
   std::vector<std::unique_ptr<DiscoProcessChannel>> workers_;
   std::unique_ptr<DiscoRingChannel> ring_in_w0_;
   std::unique_ptr<DiscoRingChannel> ring_out_w0_;
+  std::vector<std::unique_ptr<DiscoRingChannel>> node_children_;
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("runtime.disco.ProcessSession", ProcessSessionObj, SessionObj);
 };
 
@@ -215,7 +226,7 @@ Session Session::ProcessSession(int num_workers, int num_group, ffi::String proc
 }
 
 void WorkerProcess(int worker_id, int num_workers, int num_group, int64_t read_fd, int64_t write_fd,
-                   int64_t ring_in_fd, int64_t ring_out_fd) {
+                   int64_t ring_in_fd, int64_t ring_out_fd, int64_t up_fd) {
   TVM_FFI_ICHECK_EQ(num_workers % num_group, 0)
       << "The number of workers should be divisible by the number of worker group.";
   DiscoProcessChannel channel(read_fd, write_fd);
@@ -227,6 +238,11 @@ void WorkerProcess(int worker_id, int num_workers, int num_group, int64_t read_f
     ring_out_ch = std::make_unique<DiscoRingChannel>(ring_out_fd);
     worker.ring_in = ring_in_ch.get();
     worker.ring_out = ring_out_ch.get();
+  }
+  std::unique_ptr<DiscoRingChannel> up_ch;
+  if (up_fd >= 0) {
+    up_ch = std::make_unique<DiscoRingChannel>(up_fd);
+    worker.node_up = up_ch.get();
   }
 
   worker.MainLoop();

@@ -106,6 +106,8 @@ class BcastSessionObj : public SessionObj {
    */
   virtual void CloseRing() {}
 
+  virtual void SetStarPeers(std::vector<DiscoRingChannel*> peers) {}
+
   /*! \brief A side channel to communicate with worker-0 */
   WorkerZeroData worker_zero_data_;
   /*! \brief Number of registers used, including those in `free_regs_` */
@@ -119,6 +121,7 @@ class BcastSessionObj : public SessionObj {
   friend class SocketSessionObj;
   friend class RemoteSocketSession;
   friend class RingProxyEndpoint;
+  friend class StarEndpoint;
 };
 
 /*!

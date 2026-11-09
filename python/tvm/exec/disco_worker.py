@@ -102,10 +102,10 @@ def _make_callback(device: tvm.runtime.Device) -> Callable[[str, int], Tensor]:
 def main():
     """Main worker function"""
     argc = len(sys.argv)
-    if argc not in (6, 8):
+    if argc not in (6, 8, 9):
         print(
             "Usage: <worker_id> <num_workers> <num_groups> "
-            "<read_fd> <write_fd> [<ring_in_fd> <ring_out_fd>]"
+            "<read_fd> <write_fd> [<ring_in_fd> <ring_out_fd> [<up_fd>]]"
         )
         return
     worker_id = int(sys.argv[1])
@@ -114,7 +114,8 @@ def main():
 
     ring_out_fd = -1
     ring_in_fd = -1
-    has_ring = argc == 8
+    has_ring = argc >= 8
+    up_fd = int(sys.argv[8]) if argc == 9 else -1
 
     if sys.platform == "win32":
         import msvcrt  # pylint: disable=import-outside-toplevel,import-error
@@ -129,7 +130,7 @@ def main():
             ring_out_fd = int(sys.argv[7])
 
     worker_func = get_global_func("runtime.disco.WorkerProcess")
-    worker_func(worker_id, num_workers, num_groups, reader, writer, ring_in_fd, ring_out_fd)
+    worker_func(worker_id, num_workers, num_groups, reader, writer, ring_in_fd, ring_out_fd, up_fd)
 
 
 if __name__ == "__main__":

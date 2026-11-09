@@ -388,6 +388,8 @@ class DiscoRingChannel {
     return n;
   }
 
+  int fd() const { return fd_; }
+
 
   /*!
    * \brief Send on this channel while concurrently receiving on `in`.

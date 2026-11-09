@@ -215,12 +215,13 @@ Type InferTypeGatherToWorker0(const Call& call, const BlockBuilder& ctx) {
   return TensorType(ShapeExpr(output_shape), output_dtype, input_ty->vdevice);
 }
 
-TVM_REGISTER_OP("relax.ccl.gather_to_worker0")
-    .set_num_inputs(1)
-    .add_argument("x", "Tensor", "Input to be gathered to worker-0.")
-    .set_attrs_type<GatherCollectiveAttrs>()
-    .set_attr<FInferType>("FInferType", InferTypeGatherToWorker0)
-    .set_attr<bool>("FPurity", true);
+TVM_FFI_STATIC_INIT_BLOCK() {
+  OpDef("relax.ccl.gather_to_worker0")
+      .signature(sig::arg("x", "Input to be gathered to worker-0."),
+                 sig::call_attrs<GatherCollectiveAttrs>())
+      .set_attr<FInferTypeWithBuilder>("relax.FInferTypeWithBuilder", InferTypeGatherToWorker0)
+      .set_attr<bool>("FPurity", true);
+}
 
 }  // namespace relax
 }  // namespace tvm
